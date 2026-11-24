@@ -1,0 +1,73 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'DM Sans', sans-serif;
+  --font-display: 'Manrope', sans-serif;
+}
+
+@layer base {
+  html {
+    background: #0b0b0d;
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    background: #0b0b0d;
+    color: #f4f2f5;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+}
+
+.font-display {
+  font-family: 'Manrope', sans-serif;
+}
+
+.book-cover {
+  box-shadow:
+    0 18px 34px -18px rgb(0 0 0 / 0.9),
+    -5px 4px 0 -3px rgb(255 255 255 / 0.08),
+    inset 3px 0 6px rgb(255 255 255 / 0.08),
+    inset -1px 0 rgb(0 0 0 / 0.25);
+  transition:
+    transform 300ms ease,
+    box-shadow 300ms ease;
+}
+
+.group:hover .book-cover {
+  transform: translateY(-5px);
+  box-shadow:
+    0 26px 45px -20px rgb(0 0 0),
+    -5px 4px 0 -3px rgb(255 255 255 / 0.12),
+    inset 3px 0 6px rgb(255 255 255 / 0.08);
+}
+
+.cover-noise {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.38'/%3E%3C/svg%3E");
+  mix-blend-mode: soft-light;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0b0b0d;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 99px;
+  background: #372443;
+}
