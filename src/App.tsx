@@ -1,6 +1,7 @@
-import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import AuthGate from './AuthGate'
 import BookSearch from './BookSearch'
+import Friends from './Friends'
 import { type BookMatch, catalogIdentity, discoverBooks, loadBookMetadata } from './openLibrary'
 import { cleanTags, latestRatedBook, normalizeTag, recommendBooks } from './recommendations'
 import { supabase } from './supabase'
@@ -94,7 +95,7 @@ function Icon({
   name,
   size = 20,
 }: {
-  name: 'search' | 'plus' | 'book' | 'grid' | 'bookmark' | 'check' | 'clock' | 'more' | 'close' | 'arrow'
+  name: 'search' | 'plus' | 'book' | 'grid' | 'bookmark' | 'check' | 'clock' | 'more' | 'close' | 'arrow' | 'friends'
   size?: number
 }) {
   const paths = {
@@ -108,6 +109,7 @@ function Icon({
     more: <><circle cx="5" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="19" cy="12" r="1" fill="currentColor" /></>,
     close: <><path d="m6 6 12 12M18 6 6 18" /></>,
     arrow: <><path d="M5 12h14M13 6l6 6-6 6" /></>,
+    friends: <><circle cx="9" cy="7" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 4a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 5v2" /></>,
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }
@@ -428,11 +430,15 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
 }
 
 export default function App() {
-  return <AuthGate>{(session) => <Library key={session.user.id} />}</AuthGate>
+  return <AuthGate>{(session) => <Library key={session.user.id} userId={session.user.id} />}</AuthGate>
 }
 
-function Library() {
+function Library({ userId }: { userId: string }) {
   const [books, setBooks] = useState<Book[]>([])
+  const [showFriends, setShowFriends] = useState(false)
+  const [incomingRequests, setIncomingRequests] = useState(0)
+  const [friendRequestRefresh, setFriendRequestRefresh] = useState(0)
+  const refreshFriendRequests = useCallback(() => setFriendRequestRefresh((current) => current + 1), [])
   const [filter, setFilter] = useState<'All' | Status>('All')
   const [query, setQuery] = useState('')
   const [sortByStatus, setSortByStatus] = useState(true)
@@ -452,6 +458,42 @@ function Library() {
   const [openingDiscovery, setOpeningDiscovery] = useState<string | null>(null)
   const latestRating = useMemo(() => latestRatedBook(books), [books])
   const discoveryReference = latestRating && (latestRating.rating ?? 0) > 5 ? latestRating : null
+
+  useEffect(() => {
+    const client = supabase
+    if (!client) return
+    let pending: AbortController | undefined
+    const checkRequests = async () => {
+      pending?.abort()
+      const controller = new AbortController()
+      pending = controller
+      const { count, error } = await client.from('friendships')
+        .select('requested_by', { count: 'exact', head: true })
+        .eq('accepted', false).neq('requested_by', userId)
+        .abortSignal(controller.signal)
+      if (!error && !controller.signal.aborted) setIncomingRequests(count ?? 0)
+    }
+    function checkWhenVisible() {
+      if (document.visibilityState === 'visible') void checkRequests()
+    }
+    void checkRequests()
+    const interval = window.setInterval(checkWhenVisible, 30000)
+    window.addEventListener('focus', checkWhenVisible)
+    document.addEventListener('visibilitychange', checkWhenVisible)
+    return () => {
+      pending?.abort()
+      window.clearInterval(interval)
+      window.removeEventListener('focus', checkWhenVisible)
+      document.removeEventListener('visibilitychange', checkWhenVisible)
+    }
+  }, [userId, friendRequestRefresh])
+
+  const friendBadge = incomingRequests > 0 && (
+    <>
+      <span aria-hidden="true" className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-[#c7ff36] px-1.5 py-0.5 text-[10px] font-bold leading-none text-black">{incomingRequests > 99 ? '99+' : incomingRequests}</span>
+      <span className="sr-only">, {incomingRequests} incoming friend {incomingRequests === 1 ? 'request' : 'requests'}</span>
+    </>
+  )
 
   useEffect(() => {
     if (!discoveryReference) return
@@ -674,18 +716,23 @@ function Library() {
             <div className="flex size-9 items-center justify-center rounded-full bg-[#c7ff36] text-black"><Icon name="book" size={18} /></div>
             <span className="font-display text-[21px] font-semibold tracking-[-0.03em]">folio.</span>
           </div>
-          <div className="relative mx-auto hidden w-full max-w-md md:block">
+          <div className={`relative mx-auto hidden w-full max-w-md ${showFriends ? '' : 'md:block'}`}>
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/35"><Icon name="search" size={18} /></span>
             <input value={query} onChange={(e) => setQuery(e.target.value)} className="h-10 w-full rounded-full border border-white/[0.08] bg-white/[0.045] pl-11 pr-4 text-sm outline-none transition focus:border-[#c7ff36]/60 focus:bg-white/[0.07]" placeholder="Search your library" />
           </div>
-          <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
+          <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setShowFriends(false); setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
             <Icon name="plus" size={17} /><span className="hidden sm:inline">Add Book</span>
           </button>
           <button onClick={signOut} className="shrink-0 text-xs text-white/60 hover:text-white">Sign out</button>
         </div>
+        {showFriends && signOutError && <p role="alert" className="px-5 pb-2 text-sm text-red-300">{signOutError}</p>}
       </header>
 
-      <main className="mx-auto flex min-h-screen max-w-[1500px] pt-[72px]">
+      <main className="mx-auto flex min-h-screen max-w-[1500px] flex-col pt-[72px] lg:flex-row">
+        <nav aria-label="Library and friends" className="flex gap-2 border-b border-white/10 px-5 py-3 lg:hidden">
+          <button type="button" onClick={() => setShowFriends(false)} aria-current={!showFriends ? 'page' : undefined} className={`rounded-full px-4 py-2 text-sm ${showFriends ? 'text-white/60' : 'bg-[#372443] text-white'}`}>Library</button>
+          <button type="button" onClick={() => setShowFriends(true)} aria-current={showFriends ? 'page' : undefined} className={`rounded-full px-4 py-2 text-sm ${showFriends ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends{friendBadge}</button>
+        </nav>
         <aside className="hidden w-[242px] shrink-0 border-r border-white/[0.07] px-5 py-8 lg:block">
           <p className="mb-3 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/30">Library</p>
           {[
@@ -694,14 +741,17 @@ function Library() {
             { label: statusLabels['To Read'], value: 'To Read', icon: 'bookmark' },
             { label: 'Finished', value: 'Read', icon: 'check' },
           ].map((item) => (
-            <button key={item.value} onClick={() => setFilter(item.value as 'All' | Status)} className={`mb-1 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm transition ${filter === item.value ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
-              <span className={filter === item.value ? 'text-[#c7ff36]' : ''}><Icon name={item.icon as 'grid'} size={17} /></span>
+            <button key={item.value} onClick={() => { setShowFriends(false); setFilter(item.value as 'All' | Status) }} className={`mb-1 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm transition ${!showFriends && filter === item.value ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
+              <span className={!showFriends && filter === item.value ? 'text-[#c7ff36]' : ''}><Icon name={item.icon as 'grid'} size={17} /></span>
               <span>{item.label}</span><span className="ml-auto text-xs text-white/25">{counts[item.value as keyof typeof counts]}</span>
             </button>
           ))}
+          <button type="button" aria-current={showFriends ? 'page' : undefined} onClick={() => setShowFriends(true)} className={`mt-3 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm ${showFriends ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
+            <span className={showFriends ? 'text-[#c7ff36]' : ''}><Icon name="friends" size={17} /></span><span>Friends{friendBadge}</span>
+          </button>
         </aside>
 
-        <section className="min-w-0 flex-1 px-5 pb-14 pt-8 md:px-9 md:pt-11 xl:px-12">
+        {showFriends ? <Friends userId={userId} onRequestsChanged={refreshFriendRequests} /> : <section className="min-w-0 flex-1 px-5 pb-14 pt-8 md:px-9 md:pt-11 xl:px-12">
           <div className="mb-8 flex flex-col justify-between gap-6 md:flex-row md:items-end">
             <div>
               <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#c7ff36]">Personal library</p>
@@ -804,7 +854,7 @@ function Library() {
               <p className="mt-2 text-sm text-white/35">{query.trim() ? 'Try another search.' : 'Use Add Book to add a title.'}</p>
             </div>
           )}
-        </section>
+        </section>}
       </main>
 
       {bookView && activeBook && (
