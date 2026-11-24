@@ -1,7 +1,8 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import AuthGate from './AuthGate'
 import BookSearch from './BookSearch'
-import Friends from './Friends'
+import Friends, { type SharedBook } from './Friends'
+import FriendRecommendations, { RecommendationComposer } from './FriendRecommendations'
 import { type BookMatch, catalogIdentity, discoverBooks, loadBookMetadata } from './openLibrary'
 import { cleanTags, latestRatedBook, normalizeTag, recommendBooks } from './recommendations'
 import { supabase } from './supabase'
@@ -30,7 +31,8 @@ type Book = {
 }
 
 type BookChanges = Partial<Pick<Book, 'title' | 'author' | 'description' | 'mark' | 'status' | 'progress' | 'cover_photo' | 'current_page' | 'total_pages' | 'rating' | 'tags' | 'series'>>
-type BookView = 'details' | 'edit' | 'progress' | 'wishlist' | 'remove' | 'rating'
+type BookView = 'details' | 'edit' | 'progress' | 'wishlist' | 'remove' | 'rating' | 'recommend'
+type BookDraft = Omit<BookMatch, 'id' | 'sourceUrl'> & { sourceUrl: string | null; sharedCover?: string | null }
 
 const statusOrder = ['Reading', 'To Read', 'Read'] as const
 const statusPriority: Record<Status, number> = { Read: 0, Reading: 1, Unread: 2, 'To Read': 3 }
@@ -43,6 +45,16 @@ const palettes = [
   'from-[#171d28] via-[#344f69] to-[#85a7a4]',
   'from-[#2a1619] via-[#803a45] to-[#d28e7a]',
 ]
+
+function NotificationBadge({ count, description }: { count: number; description: string }) {
+  if (!count) return null
+  return (
+    <>
+      <span aria-hidden="true" className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-[#c7ff36] px-1.5 py-0.5 text-[10px] font-bold leading-none text-black">{count > 99 ? '99+' : count}</span>
+      <span className="sr-only">, {count} {description}</span>
+    </>
+  )
+}
 
 function demoBooks(): Book[] {
   const sample: Pick<Book, 'title' | 'author' | 'status' | 'description' | 'tags' | 'series'>[] = [
@@ -311,9 +323,10 @@ const bookViewTitles: Record<BookView, string> = {
   wishlist: 'Move to wishlist',
   remove: 'Remove book',
   rating: 'Rate book',
+  recommend: 'Recommend to a friend',
 }
 
-function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onRemove, viewOnly }: {
+function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onRemove, viewOnly, userId }: {
   book: Book
   view: BookView
   tagSuggestions: string[]
@@ -322,6 +335,7 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
   onUpdate: (id: string, changes: BookChanges) => Promise<void>
   onRemove: (id: string) => Promise<void>
   viewOnly: boolean
+  userId: string | null
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [busy, setBusy] = useState(false)
@@ -382,7 +396,8 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
     try {
       if (view === 'remove') await onRemove(book.id)
       else await onUpdate(book.id, changes)
-      onClose()
+      if (view === 'rating' && changes.rating != null && userId) onOpen('recommend')
+      else onClose()
     } catch {
       setError(view === 'remove' ? 'Could not remove this book. Try again.' : 'Could not save your changes. Try again.')
     } finally {
@@ -418,8 +433,11 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
           {!viewOnly && <div className="mt-5 flex flex-wrap gap-3">
             <button type="button" onClick={() => onOpen('edit')} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Edit details</button>
             {book.status === 'Read' && book.rating === null && <button type="button" onClick={() => onOpen('rating')} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Rate book</button>}
+            {book.status === 'Read' && book.rating !== null && <button type="button" onClick={() => onOpen('recommend')} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Recommend to a friend</button>}
           </div>}
         </>
+      ) : view === 'recommend' ? (
+        userId && book.rating !== null && <RecommendationComposer userId={userId} bookId={book.id} title={book.title} rating={book.rating} onDone={onClose} />
       ) : (
         <form onSubmit={save} className="space-y-4">
           {view === 'edit' && (
@@ -477,15 +495,16 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
   const isGuest = userId === null
   const client = isGuest ? null : supabase
   const [books, setBooks] = useState<Book[]>(() => isGuest ? demoBooks() : [])
-  const [showFriends, setShowFriends] = useState(false)
+  const [socialView, setSocialView] = useState<'friends' | 'recommendations' | null>(null)
   const [incomingRequests, setIncomingRequests] = useState(0)
-  const [friendRequestRefresh, setFriendRequestRefresh] = useState(0)
-  const refreshFriendRequests = useCallback(() => setFriendRequestRefresh((current) => current + 1), [])
+  const [unreadRecommendations, setUnreadRecommendations] = useState(0)
+  const [notificationRefresh, setNotificationRefresh] = useState(0)
+  const refreshNotifications = useCallback(() => setNotificationRefresh((current) => current + 1), [])
   const [filter, setFilter] = useState<'All' | Status>('All')
   const [query, setQuery] = useState('')
   const [sortByStatus, setSortByStatus] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
-  const [draft, setDraft] = useState<Omit<BookMatch, 'id' | 'sourceUrl'> & { sourceUrl: string | null } | null>(null)
+  const [draft, setDraft] = useState<BookDraft | null>(null)
   const [keepCover, setKeepCover] = useState(true)
   const [duplicateId, setDuplicateId] = useState<string | null>(null)
   const [allowDuplicate, setAllowDuplicate] = useState(false)
@@ -504,20 +523,24 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
   useEffect(() => {
     if (!client || userId === null) return
     let pending: AbortController | undefined
-    const checkRequests = async () => {
+    const checkNotifications = async () => {
       pending?.abort()
       const controller = new AbortController()
       pending = controller
-      const { count, error } = await client.from('friendships')
-        .select('requested_by', { count: 'exact', head: true })
-        .eq('accepted', false).neq('requested_by', userId)
-        .abortSignal(controller.signal)
-      if (!error && !controller.signal.aborted) setIncomingRequests(count ?? 0)
+      const [requests, recommendations] = await Promise.all([
+        client.from('friendships').select('requested_by', { count: 'exact', head: true })
+          .eq('accepted', false).neq('requested_by', userId).abortSignal(controller.signal),
+        client.from('friend_book_recommendations').select('id', { count: 'exact', head: true })
+          .eq('recipient_id', userId).is('read_at', null).abortSignal(controller.signal),
+      ])
+      if (controller.signal.aborted) return
+      if (!requests.error) setIncomingRequests(requests.count ?? 0)
+      if (!recommendations.error) setUnreadRecommendations(recommendations.count ?? 0)
     }
     function checkWhenVisible() {
-      if (document.visibilityState === 'visible') void checkRequests()
+      if (document.visibilityState === 'visible') void checkNotifications()
     }
-    void checkRequests()
+    void checkNotifications()
     const interval = window.setInterval(checkWhenVisible, 30000)
     window.addEventListener('focus', checkWhenVisible)
     document.addEventListener('visibilitychange', checkWhenVisible)
@@ -527,14 +550,10 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
       window.removeEventListener('focus', checkWhenVisible)
       document.removeEventListener('visibilitychange', checkWhenVisible)
     }
-  }, [client, userId, friendRequestRefresh])
+  }, [client, userId, notificationRefresh])
 
-  const friendBadge = incomingRequests > 0 && (
-    <>
-      <span aria-hidden="true" className="ml-2 inline-flex min-w-5 items-center justify-center rounded-full bg-[#c7ff36] px-1.5 py-0.5 text-[10px] font-bold leading-none text-black">{incomingRequests > 99 ? '99+' : incomingRequests}</span>
-      <span className="sr-only">, {incomingRequests} incoming friend {incomingRequests === 1 ? 'request' : 'requests'}</span>
-    </>
-  )
+  const friendBadge = <NotificationBadge count={incomingRequests} description={incomingRequests === 1 ? 'incoming friend request' : 'incoming friend requests'} />
+  const recommendationBadge = <NotificationBadge count={unreadRecommendations} description={unreadRecommendations === 1 ? 'unread recommendation' : 'unread recommendations'} />
 
   useEffect(() => {
     if (isGuest || !discoveryReference) return
@@ -655,6 +674,18 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
     setDraft(book)
   }
 
+  function chooseSharedBook(book: SharedBook) {
+    clearDuplicate()
+    setSaveError('')
+    setKeepCover(true)
+    setDuplicateId(findDuplicate(book.title, book.author)?.id ?? null)
+    setDraft({
+      title: book.title, author: book.author, coverUrl: book.cover_url, sharedCover: book.cover_photo,
+      sourceUrl: null, description: '', tags: [], series: null,
+    })
+    setShowAdd(true)
+  }
+
   async function openDiscoveryBook(book: BookMatch) {
     if (openingDiscovery) return
     setOpeningDiscovery(book.id)
@@ -680,6 +711,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
 
   function openDuplicate(book: Book) {
     setShowAdd(false)
+    setSocialView(null)
     setFilter(book.status === 'To Read' ? 'To Read' : 'All')
     setQuery('')
     setBookView({ id: book.id, view: 'details' })
@@ -711,7 +743,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
     setSaving(true)
     setSaveError('')
     try {
-      let coverPhoto = null
+      let coverPhoto = keepCover ? draft?.sharedCover ?? null : null
       if (cover) {
         try {
           coverPhoto = await encodeCover(cover)
@@ -738,6 +770,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
       const { data: book, error } = await client.from('books').insert(values).select(bookFields).single<Book>()
       if (error) throw error
       setBooks((current) => [book, ...current])
+      setSocialView(null)
       setFilter(status === 'To Read' ? 'To Read' : 'All')
       setQuery('')
       setShowAdd(false)
@@ -756,22 +789,23 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
             <div className="flex size-9 items-center justify-center rounded-full bg-[#c7ff36] text-black"><Icon name="book" size={18} /></div>
             <span className="font-display text-[21px] font-semibold tracking-[-0.03em]">folio.</span>
           </div>
-          <div className={`relative mx-auto hidden w-full max-w-md ${showFriends ? '' : 'md:block'}`}>
+          <div className={`relative mx-auto hidden w-full max-w-md ${socialView ? '' : 'md:block'}`}>
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/35"><Icon name="search" size={18} /></span>
             <input value={query} onChange={(e) => setQuery(e.target.value)} className="h-10 w-full rounded-full border border-white/[0.08] bg-white/[0.045] pl-11 pr-4 text-sm outline-none transition focus:border-[#c7ff36]/60 focus:bg-white/[0.07]" placeholder="Search your library" />
           </div>
-          {!isGuest && <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setShowFriends(false); setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
+          {!isGuest && <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setSocialView(null); setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
             <Icon name="plus" size={17} /><span className="hidden sm:inline">Add Book</span>
           </button>}
           <button onClick={signOut} className={`shrink-0 text-xs text-white/60 hover:text-white ${isGuest ? 'ml-auto' : ''}`}>{isGuest ? 'Exit guest' : 'Sign out'}</button>
         </div>
-        {showFriends && signOutError && <p role="alert" className="px-5 pb-2 text-sm text-red-300">{signOutError}</p>}
+        {socialView && signOutError && <p role="alert" className="px-5 pb-2 text-sm text-red-300">{signOutError}</p>}
       </header>
 
       <main className="mx-auto flex min-h-screen max-w-[1500px] flex-col pt-[72px] lg:flex-row">
-        {!isGuest && <nav aria-label="Library and friends" className="flex gap-2 border-b border-white/10 px-5 py-3 lg:hidden">
-          <button type="button" onClick={() => setShowFriends(false)} aria-current={!showFriends ? 'page' : undefined} className={`rounded-full px-4 py-2 text-sm ${showFriends ? 'text-white/60' : 'bg-[#372443] text-white'}`}>Library</button>
-          <button type="button" onClick={() => setShowFriends(true)} aria-current={showFriends ? 'page' : undefined} className={`rounded-full px-4 py-2 text-sm ${showFriends ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends{friendBadge}</button>
+        {!isGuest && <nav aria-label="Library and friends" className="flex flex-wrap gap-2 border-b border-white/10 px-5 py-3 lg:hidden">
+          <button type="button" onClick={() => setSocialView(null)} aria-current={!socialView ? 'page' : undefined} className={`rounded-full px-3 py-2 text-sm ${socialView ? 'text-white/60' : 'bg-[#372443] text-white'}`}>Library</button>
+          <button type="button" onClick={() => setSocialView('friends')} aria-current={socialView === 'friends' ? 'page' : undefined} className={`rounded-full px-3 py-2 text-sm ${socialView === 'friends' ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends{friendBadge}</button>
+          <button type="button" onClick={() => setSocialView('recommendations')} aria-current={socialView === 'recommendations' ? 'page' : undefined} className={`rounded-full px-3 py-2 text-sm ${socialView === 'recommendations' ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends Recommendations{recommendationBadge}</button>
         </nav>}
         <aside className="hidden w-[242px] shrink-0 border-r border-white/[0.07] px-5 py-8 lg:block">
           <p className="mb-3 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/30">Library</p>
@@ -781,17 +815,24 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
             { label: statusLabels['To Read'], value: 'To Read', icon: 'bookmark' },
             { label: 'Finished', value: 'Read', icon: 'check' },
           ].filter((item) => !isGuest || item.value !== 'To Read').map((item) => (
-            <button key={item.value} onClick={() => { setShowFriends(false); setFilter(item.value as 'All' | Status) }} className={`mb-1 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm transition ${!showFriends && filter === item.value ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
-              <span className={!showFriends && filter === item.value ? 'text-[#c7ff36]' : ''}><Icon name={item.icon as 'grid'} size={17} /></span>
+            <button key={item.value} onClick={() => { setSocialView(null); setFilter(item.value as 'All' | Status) }} className={`mb-1 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm transition ${!socialView && filter === item.value ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
+              <span className={!socialView && filter === item.value ? 'text-[#c7ff36]' : ''}><Icon name={item.icon as 'grid'} size={17} /></span>
               <span>{item.label}</span><span className="ml-auto text-xs text-white/25">{counts[item.value as keyof typeof counts]}</span>
             </button>
           ))}
-          {!isGuest && <button type="button" aria-current={showFriends ? 'page' : undefined} onClick={() => setShowFriends(true)} className={`mt-3 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm ${showFriends ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
-            <span className={showFriends ? 'text-[#c7ff36]' : ''}><Icon name="friends" size={17} /></span><span>Friends{friendBadge}</span>
-          </button>}
+          {!isGuest && <>
+            <button type="button" aria-current={socialView === 'friends' ? 'page' : undefined} onClick={() => setSocialView('friends')} className={`mt-3 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm ${socialView === 'friends' ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
+              <span className={socialView === 'friends' ? 'text-[#c7ff36]' : ''}><Icon name="friends" size={17} /></span><span>Friends{friendBadge}</span>
+            </button>
+            <button type="button" aria-current={socialView === 'recommendations' ? 'page' : undefined} onClick={() => setSocialView('recommendations')} className={`mt-1 flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${socialView === 'recommendations' ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
+              <span className={socialView === 'recommendations' ? 'text-[#c7ff36]' : ''}><Icon name="bookmark" size={17} /></span><span>Friends Recommendations{recommendationBadge}</span>
+            </button>
+          </>}
         </aside>
 
-        {showFriends && userId !== null ? <Friends userId={userId} onRequestsChanged={refreshFriendRequests} /> : <section className="min-w-0 flex-1 px-5 pb-14 pt-8 md:px-9 md:pt-11 xl:px-12">
+        {socialView === 'friends' && userId !== null ? <Friends userId={userId} onRequestsChanged={refreshNotifications} onChooseBook={chooseSharedBook} />
+          : socialView === 'recommendations' && userId !== null ? <FriendRecommendations userId={userId} onUnreadChanged={refreshNotifications} onChooseBook={chooseSharedBook} />
+          : <section className="min-w-0 flex-1 px-5 pb-14 pt-8 md:px-9 md:pt-11 xl:px-12">
           <div className="mb-8 flex flex-col justify-between gap-6 md:flex-row md:items-end">
             <div>
               <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#c7ff36]">{isGuest ? 'Guest demo' : 'Personal library'}</p>
@@ -902,7 +943,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
       {bookView && activeBook && (
         <BookDialog key={`${bookView.id}:${bookView.view}`} book={activeBook} view={bookView.view} tagSuggestions={tagSuggestions}
           onClose={() => setBookView(null)} onOpen={(view) => setBookView({ id: activeBook.id, view })}
-          onUpdate={updateBook} onRemove={removeBook} viewOnly={isGuest} />
+          onUpdate={updateBook} onRemove={removeBook} viewOnly={isGuest} userId={userId} />
       )}
 
       {!isGuest && showAdd && (
@@ -932,9 +973,9 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
               <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Description (optional)</span><textarea name="description" defaultValue={draft.description} maxLength={4000} rows={3} className="w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm outline-none focus:border-[#c7ff36]/60" /></label>
               <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Series (optional)</span><input name="series" maxLength={120} defaultValue={draft.series ?? ''} className="h-12 w-full rounded-xl border border-white/10 bg-black/25 px-4 text-sm outline-none focus:border-[#c7ff36]/60" /></label>
               <TagsField initialTags={draft.tags} suggestions={tagSuggestions} />
-              {draft.coverUrl && (
+              {(draft.sharedCover || draft.coverUrl) && (
                 <label className="mb-4 flex items-center gap-3 text-sm text-white/70">
-                  <img src={draft.coverUrl} alt="" referrerPolicy="no-referrer" className="h-20 w-14 rounded object-cover" />
+                  <img src={draft.sharedCover ?? draft.coverUrl ?? undefined} alt="" referrerPolicy="no-referrer" className="h-20 w-14 rounded object-cover" />
                   <input type="checkbox" checked={keepCover} disabled={saving} onChange={(event) => setKeepCover(event.target.checked)} />
                   Keep this cover
                 </label>

@@ -10,7 +10,7 @@ type Friendship = {
   low: Profile
   high: Profile
 }
-type SharedBook = { id: string; title: string; author: string; cover_photo: string | null; cover_url: string | null }
+export type SharedBook = { id: string; title: string; author: string; cover_photo: string | null; cover_url: string | null }
 
 const profileFields = 'user_id, username, library_public'
 const namePattern = /^[a-z0-9_]{3,24}$/
@@ -19,7 +19,7 @@ const primaryClass = 'rounded-xl bg-[#c7ff36] px-4 py-2 text-sm font-semibold te
 const secondaryClass = 'rounded-xl border border-white/15 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50'
 const pageSize = 12
 
-function SharedLibrary({ friend, onBack }: { friend: Profile; onBack: () => void }) {
+function SharedLibrary({ friend, onBack, onChooseBook }: { friend: Profile; onBack: () => void; onChooseBook: (book: SharedBook) => void }) {
   const [books, setBooks] = useState<SharedBook[]>([])
   const [pageOffset, setPageOffset] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -67,17 +67,20 @@ function SharedLibrary({ friend, onBack }: { friend: Profile; onBack: () => void
       {loading && <p role="status" className="mt-6 text-sm text-white/60">Loading library…</p>}
       {!loading && !error && !books.length && <p className="mt-6 text-sm text-white/60">No books in this collection yet.</p>}
       {books.length > 0 && (
-        <ul className="mt-6 grid grid-cols-2 gap-5 sm:grid-cols-3 xl:grid-cols-5">
+        <ul aria-label="Shared books" className="mt-6 grid grid-cols-2 gap-5 sm:grid-cols-3 xl:grid-cols-5">
           {books.map((book) => {
             const cover = book.cover_photo ?? book.cover_url
             return (
               <li key={book.id} className="min-w-0">
+                <button type="button" aria-label={`Add ${book.title} to your library`} onClick={() => onChooseBook(book)}
+                  className="group block w-full rounded text-left focus-visible:outline-[#c7ff36]">
                 <div className="relative grid aspect-[2/3] place-items-center overflow-hidden rounded bg-gradient-to-br from-[#24132b] to-[#60416f] p-3 text-center">
                   <span aria-hidden="true" className="font-display text-sm font-semibold">{book.title}</span>
                   {cover && <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" className="absolute inset-0 size-full object-cover" onError={(event) => { event.currentTarget.hidden = true }} />}
                 </div>
-                <p className="mt-2 break-words text-sm font-semibold">{book.title}</p>
+                <p className="mt-2 break-words text-sm font-semibold group-hover:text-[#c7ff36]">{book.title}</p>
                 <p className="text-xs text-white/55">{book.author}</p>
+                </button>
               </li>
             )
           })}
@@ -91,7 +94,11 @@ function SharedLibrary({ friend, onBack }: { friend: Profile; onBack: () => void
   )
 }
 
-export default function Friends({ userId, onRequestsChanged }: { userId: string; onRequestsChanged: () => void }) {
+export default function Friends({ userId, onRequestsChanged, onChooseBook }: {
+  userId: string
+  onRequestsChanged: () => void
+  onChooseBook: (book: SharedBook) => void
+}) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [username, setUsername] = useState('')
   const [libraryPublic, setLibraryPublic] = useState(false)
@@ -225,7 +232,7 @@ export default function Friends({ userId, onRequestsChanged }: { userId: string;
     }, 'Could not update this connection.')
   }
 
-  if (viewing) return <SharedLibrary key={viewing.user_id} friend={viewing} onBack={() => {
+  if (viewing) return <SharedLibrary key={viewing.user_id} friend={viewing} onChooseBook={onChooseBook} onBack={() => {
     setViewing(null)
     void loadConnections().catch(() => setError('Could not refresh your friends.'))
   }} />
