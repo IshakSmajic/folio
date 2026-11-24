@@ -2,11 +2,13 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 
-export default function AuthGate({ children }: { children: (session: Session) => ReactNode }) {
+export default function AuthGate({ children, guest }: { children: (session: Session) => ReactNode; guest: (exit: () => void) => ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(Boolean(supabase))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [guestTab, setGuestTab] = useState(false)
+  const [guestActive, setGuestActive] = useState(false)
 
   useEffect(() => {
     if (!supabase) return
@@ -37,13 +39,23 @@ export default function AuthGate({ children }: { children: (session: Session) =>
   }
 
   if (session) return children(session)
+  if (guestActive) return guest(() => { setGuestActive(false); setGuestTab(false) })
 
   return (
     <main className="grid min-h-screen place-items-center bg-[#0b0b0d] px-5 text-[#f4f2f5]">
       <section className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#171219] p-7">
         <p className="mb-2 font-display text-xl font-semibold text-[#c7ff36]">folio.</p>
         <h1 className="mb-5 font-display text-3xl font-semibold">Your library</h1>
-        {loading ? <p role="status">Loading your session...</p> : !supabase ? (
+        <div role="group" aria-label="Choose how to access Folio" className="mb-5 grid grid-cols-2 gap-1 rounded-xl bg-black/30 p-1">
+          <button type="button" aria-pressed={!guestTab} onClick={() => setGuestTab(false)} className={`rounded-lg px-2 py-2 text-sm ${!guestTab ? 'bg-white/10 font-semibold' : 'text-white/65'}`}>Sign in</button>
+          <button type="button" aria-pressed={guestTab} onClick={() => setGuestTab(true)} className={`rounded-lg px-2 py-2 text-sm ${guestTab ? 'bg-white/10 font-semibold' : 'text-white/65'}`}>Guest</button>
+        </div>
+        {guestTab ? (
+          <div className="grid gap-4">
+            <p className="text-sm leading-6 text-white/70">Explore a sample library without an account. Changes reset when you leave the demo or refresh the page.</p>
+            <button type="button" onClick={() => setGuestActive(true)} className="rounded-xl bg-[#c7ff36] px-4 py-3 text-sm font-semibold text-black">Log in as guest</button>
+          </div>
+        ) : loading ? <p role="status">Loading your session...</p> : !supabase ? (
           <p role="alert">Folio needs its Supabase URL and publishable key before you can sign in.</p>
         ) : (
           <form className="grid gap-4" onSubmit={signIn}>

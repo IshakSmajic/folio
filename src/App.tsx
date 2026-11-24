@@ -38,6 +38,35 @@ const statusLabels: Record<Status, string> = { Unread: 'Unread', Reading: 'Readi
 const bookFields = 'id, title, author, status, progress, current_page, total_pages, palette, mark, category, cover_photo, description, cover_url, source_url, rating, rated_at, tags, series'
 const coverTypes = ['image/jpeg', 'image/png', 'image/webp']
 const maxCoverLength = 262144
+const palettes = [
+  'from-[#1c1521] via-[#5c3471] to-[#c066db]',
+  'from-[#171d28] via-[#344f69] to-[#85a7a4]',
+  'from-[#2a1619] via-[#803a45] to-[#d28e7a]',
+]
+
+function demoBooks(): Book[] {
+  const sample: Pick<Book, 'title' | 'author' | 'status' | 'description' | 'tags' | 'series'>[] = [
+    { title: 'Helsreach', author: 'Aaron Dembski-Bowden', status: 'Read', description: 'A company of Black Templars defends a city on Armageddon from an Ork siege.', tags: ['Black Templars', 'Siege defense', 'Space warfare'], series: null },
+    { title: 'The First Heretic', author: 'Aaron Dembski-Bowden', status: 'Unread', description: 'The Word Bearers begin a search for faith that changes their legion and the Imperium.', tags: ['Word Bearers', 'Space warfare', 'Horus Heresy'], series: 'The Horus Heresy' },
+    { title: 'Horus Rising', author: 'Dan Abnett', status: 'Reading', description: 'The Warmaster takes command of the Great Crusade as tensions grow within the Imperium.', tags: ['Horus Heresy', 'Space warfare'], series: 'The Horus Heresy' },
+    { title: 'The Infinite and the Divine', author: 'Robert Rath', status: 'To Read', description: 'Two Necron rivals pursue an ancient artifact across millennia.', tags: ['Necrons', 'Rivalry'], series: null },
+  ]
+  return sample.map((book, index) => ({
+    ...book,
+    id: `demo-${index}`,
+    progress: book.status === 'Read' ? 100 : book.status === 'Reading' ? 25 : 0,
+    current_page: book.status === 'Reading' ? 100 : null,
+    total_pages: book.status === 'Reading' ? 400 : null,
+    rating: book.status === 'Read' ? 9 : null,
+    rated_at: book.status === 'Read' ? '2026-01-01T00:00:00Z' : null,
+    palette: palettes[index % palettes.length],
+    mark: book.title.toUpperCase(),
+    category: 'Sample collection',
+    cover_photo: null,
+    cover_url: null,
+    source_url: null,
+  }))
+}
 
 function normalizedBookText(value: string) {
   return value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
@@ -430,11 +459,17 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
 }
 
 export default function App() {
-  return <AuthGate>{(session) => <Library key={session.user.id} userId={session.user.id} />}</AuthGate>
+  return (
+    <AuthGate guest={(exit) => <Library key="guest" userId={null} onExitGuest={exit} />}>
+      {(session) => <Library key={session.user.id} userId={session.user.id} />}
+    </AuthGate>
+  )
 }
 
-function Library({ userId }: { userId: string }) {
-  const [books, setBooks] = useState<Book[]>([])
+function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?: () => void }) {
+  const isGuest = userId === null
+  const client = isGuest ? null : supabase
+  const [books, setBooks] = useState<Book[]>(() => isGuest ? demoBooks() : [])
   const [showFriends, setShowFriends] = useState(false)
   const [incomingRequests, setIncomingRequests] = useState(0)
   const [friendRequestRefresh, setFriendRequestRefresh] = useState(0)
@@ -448,7 +483,7 @@ function Library({ userId }: { userId: string }) {
   const [duplicateId, setDuplicateId] = useState<string | null>(null)
   const [allowDuplicate, setAllowDuplicate] = useState(false)
   const [bookView, setBookView] = useState<{ id: string; view: BookView } | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!isGuest)
   const [loadError, setLoadError] = useState('')
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [saveError, setSaveError] = useState('')
@@ -460,8 +495,7 @@ function Library({ userId }: { userId: string }) {
   const discoveryReference = latestRating && (latestRating.rating ?? 0) > 5 ? latestRating : null
 
   useEffect(() => {
-    const client = supabase
-    if (!client) return
+    if (!client || userId === null) return
     let pending: AbortController | undefined
     const checkRequests = async () => {
       pending?.abort()
@@ -486,7 +520,7 @@ function Library({ userId }: { userId: string }) {
       window.removeEventListener('focus', checkWhenVisible)
       document.removeEventListener('visibilitychange', checkWhenVisible)
     }
-  }, [userId, friendRequestRefresh])
+  }, [client, userId, friendRequestRefresh])
 
   const friendBadge = incomingRequests > 0 && (
     <>
@@ -513,11 +547,10 @@ function Library({ userId }: { userId: string }) {
   }, [discoveryReference])
 
   useEffect(() => {
-    if (!supabase) return
-    const client = supabase
+    if (!client) return
     let active = true
 
-    async function loadBooks() {
+    const loadBooks = async () => {
       try {
         const { data, error } = await client.from('books')
           .select(bookFields)
@@ -535,13 +568,17 @@ function Library({ userId }: { userId: string }) {
 
     void loadBooks()
     return () => { active = false }
-  }, [loadAttempt])
+  }, [client, loadAttempt])
 
   async function signOut() {
-    if (!supabase) return
+    if (onExitGuest) {
+      onExitGuest()
+      return
+    }
+    if (!client) return
     setSignOutError('')
     try {
-      const { error } = await supabase.auth.signOut({ scope: 'local' })
+      const { error } = await client.auth.signOut({ scope: 'local' })
       if (error) throw error
     } catch {
       setSignOutError('Could not sign out. Try again.')
@@ -577,19 +614,25 @@ function Library({ userId }: { userId: string }) {
   }
 
   async function updateBook(id: string, changes: BookChanges) {
-    if (!supabase) throw new Error('Supabase is unavailable.')
-    const { data, error } = await supabase.from('books').update(changes).eq('id', id).select('id, rated_at').single<Pick<Book, 'id' | 'rated_at'>>()
-    if (error || !data) throw error ?? new Error('Book not found.')
+    let ratedAt = changes.rating == null ? null : new Date().toISOString()
+    if (!isGuest) {
+      if (!client) throw new Error('Supabase is unavailable.')
+      const { data, error } = await client.from('books').update(changes).eq('id', id).select('id, rated_at').single<Pick<Book, 'id' | 'rated_at'>>()
+      if (error || !data) throw error ?? new Error('Book not found.')
+      ratedAt = data.rated_at
+    }
     setBooks((current) => current.map((book) => book.id === id
-      ? { ...book, ...changes, rated_at: 'rating' in changes ? data.rated_at : book.rated_at }
+      ? { ...book, ...changes, rated_at: 'rating' in changes ? ratedAt : book.rated_at }
       : book))
   }
 
   async function removeBook(id: string) {
-    if (!supabase) throw new Error('Supabase is unavailable.')
-    const { data, error } = await supabase.from('books').delete().eq('id', id).select('id').maybeSingle()
-    if (error) throw error
-    if (!data) throw new Error('Book not found.')
+    if (!isGuest) {
+      if (!client) throw new Error('Supabase is unavailable.')
+      const { data, error } = await client.from('books').delete().eq('id', id).select('id').maybeSingle()
+      if (error) throw error
+      if (!data) throw new Error('Book not found.')
+    }
     setBooks((current) => current.filter((book) => book.id !== id))
   }
 
@@ -643,7 +686,7 @@ function Library({ userId }: { userId: string }) {
 
   async function addBook(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase || loading || loadError || saving) return
+    if ((!isGuest && !client) || loading || loadError || saving) return
     const data = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter)
     const title = String(data.get('title') || '').trim()
     const author = String(data.get('author') || '').trim()
@@ -664,11 +707,6 @@ function Library({ userId }: { userId: string }) {
       setSaveError('Choose a JPEG, PNG, or WebP cover photo up to 10 MB.')
       return
     }
-    const palettes = [
-      'from-[#1c1521] via-[#5c3471] to-[#c066db]',
-      'from-[#171d28] via-[#344f69] to-[#85a7a4]',
-      'from-[#2a1619] via-[#803a45] to-[#d28e7a]',
-    ]
     setSaving(true)
     setSaveError('')
     try {
@@ -681,7 +719,7 @@ function Library({ userId }: { userId: string }) {
           return
         }
       }
-      const { data: book, error } = await supabase.from('books').insert({
+      const values = {
         title,
         author,
         status,
@@ -695,8 +733,16 @@ function Library({ userId }: { userId: string }) {
         source_url: draft?.sourceUrl ?? null,
         tags: cleanTags(String(data.get('tags') ?? '').split(',')),
         series: String(data.get('series') ?? '').trim() || null,
-      }).select(bookFields).single<Book>()
-      if (error) throw error
+      }
+      let book: Book
+      if (isGuest) {
+        book = { ...values, id: crypto.randomUUID(), current_page: null, total_pages: null, rating: null, rated_at: null }
+      } else {
+        if (!client) throw new Error('Supabase is unavailable.')
+        const { data, error } = await client.from('books').insert(values).select(bookFields).single<Book>()
+        if (error) throw error
+        book = data
+      }
       setBooks((current) => [book, ...current])
       setFilter(status === 'To Read' ? 'To Read' : 'All')
       setQuery('')
@@ -723,16 +769,16 @@ function Library({ userId }: { userId: string }) {
           <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setShowFriends(false); setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
             <Icon name="plus" size={17} /><span className="hidden sm:inline">Add Book</span>
           </button>
-          <button onClick={signOut} className="shrink-0 text-xs text-white/60 hover:text-white">Sign out</button>
+          <button onClick={signOut} className="shrink-0 text-xs text-white/60 hover:text-white">{isGuest ? 'Exit guest' : 'Sign out'}</button>
         </div>
         {showFriends && signOutError && <p role="alert" className="px-5 pb-2 text-sm text-red-300">{signOutError}</p>}
       </header>
 
       <main className="mx-auto flex min-h-screen max-w-[1500px] flex-col pt-[72px] lg:flex-row">
-        <nav aria-label="Library and friends" className="flex gap-2 border-b border-white/10 px-5 py-3 lg:hidden">
+        {!isGuest && <nav aria-label="Library and friends" className="flex gap-2 border-b border-white/10 px-5 py-3 lg:hidden">
           <button type="button" onClick={() => setShowFriends(false)} aria-current={!showFriends ? 'page' : undefined} className={`rounded-full px-4 py-2 text-sm ${showFriends ? 'text-white/60' : 'bg-[#372443] text-white'}`}>Library</button>
           <button type="button" onClick={() => setShowFriends(true)} aria-current={showFriends ? 'page' : undefined} className={`rounded-full px-4 py-2 text-sm ${showFriends ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends{friendBadge}</button>
-        </nav>
+        </nav>}
         <aside className="hidden w-[242px] shrink-0 border-r border-white/[0.07] px-5 py-8 lg:block">
           <p className="mb-3 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/30">Library</p>
           {[
@@ -746,17 +792,17 @@ function Library({ userId }: { userId: string }) {
               <span>{item.label}</span><span className="ml-auto text-xs text-white/25">{counts[item.value as keyof typeof counts]}</span>
             </button>
           ))}
-          <button type="button" aria-current={showFriends ? 'page' : undefined} onClick={() => setShowFriends(true)} className={`mt-3 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm ${showFriends ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
+          {!isGuest && <button type="button" aria-current={showFriends ? 'page' : undefined} onClick={() => setShowFriends(true)} className={`mt-3 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm ${showFriends ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
             <span className={showFriends ? 'text-[#c7ff36]' : ''}><Icon name="friends" size={17} /></span><span>Friends{friendBadge}</span>
-          </button>
+          </button>}
         </aside>
 
-        {showFriends ? <Friends userId={userId} onRequestsChanged={refreshFriendRequests} /> : <section className="min-w-0 flex-1 px-5 pb-14 pt-8 md:px-9 md:pt-11 xl:px-12">
+        {showFriends && userId !== null ? <Friends userId={userId} onRequestsChanged={refreshFriendRequests} /> : <section className="min-w-0 flex-1 px-5 pb-14 pt-8 md:px-9 md:pt-11 xl:px-12">
           <div className="mb-8 flex flex-col justify-between gap-6 md:flex-row md:items-end">
             <div>
-              <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#c7ff36]">Personal library</p>
+              <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#c7ff36]">{isGuest ? 'Guest demo' : 'Personal library'}</p>
               <h1 className="font-display text-4xl font-medium tracking-[-0.045em] md:text-5xl">{filter === 'To Read' ? 'Wishlist' : 'Your collection'}</h1>
-              <p className="mt-3 max-w-lg text-sm leading-6 text-white/40">A quiet place for every story you’re reading, loved, or still waiting to discover.</p>
+              <p className="mt-3 max-w-lg text-sm leading-6 text-white/50">{isGuest ? 'Changes reset when you exit guest mode or refresh the page.' : 'A quiet place for every story you’re reading, loved, or still waiting to discover.'}</p>
             </div>
             <div className="flex items-center gap-2 overflow-x-auto pb-1 lg:hidden">
               {(['All', ...statusOrder] as const).map((item) => (

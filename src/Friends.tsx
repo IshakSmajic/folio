@@ -34,8 +34,14 @@ function SharedLibrary({ friend, onBack }: { friend: Profile; onBack: () => void
       try {
         const { data, error } = await client.rpc('read_friend_library', { friend_id: friend.user_id, page_offset: pageOffset })
           .abortSignal(controller.signal)
-        if (error) throw error
         if (controller.signal.aborted) return
+        if (error?.code === '42501') {
+          setBooks([])
+          setHasMore(false)
+          setError('This library is private or no longer shared with you.')
+          return
+        }
+        if (error) throw error
         if (!Array.isArray(data)) throw new Error('Unexpected library response.')
         const page: SharedBook[] = data
         setBooks((current) => pageOffset === 0 ? page : [...current, ...page.filter((book) => !current.some((item) => item.id === book.id))])
@@ -44,7 +50,7 @@ function SharedLibrary({ friend, onBack }: { friend: Profile; onBack: () => void
         if (controller.signal.aborted) return
         setBooks([])
         setHasMore(false)
-        setError('This library is private or unavailable.')
+        setError('Could not load this library. Go back and try again.')
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
@@ -272,11 +278,15 @@ export default function Friends({ userId, onRequestsChanged }: { userId: string;
                     return (
                       <li key={friend.user_id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 p-3">
                         <div className="min-w-0">
-                          <p className="break-words text-sm font-semibold">@{friend.username}</p>
+                          {connection.accepted ? (
+                            <button type="button" onClick={() => setViewing(friend)}
+                              className="break-words text-left text-sm font-semibold text-[#c7ff36] underline decoration-[#c7ff36]/45 underline-offset-4 hover:decoration-current focus-visible:outline-[#c7ff36]">
+                              @{friend.username}
+                            </button>
+                          ) : <p className="break-words text-sm font-semibold">@{friend.username}</p>}
                           <p className="mt-1 text-xs text-white/60">{connection.accepted ? (friend.library_public ? 'Public library' : 'Private library') : (incoming ? 'Incoming request' : 'Request sent')}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {connection.accepted && friend.library_public && <button type="button" onClick={() => setViewing(friend)} className={primaryClass}>View library</button>}
                           {!connection.accepted && incoming && <button type="button" disabled={busy} onClick={() => updateConnection(connection, true)} className={primaryClass}>Accept</button>}
                           <button type="button" disabled={busy} onClick={() => updateConnection(connection, false)} className={secondaryClass}>
                             {connection.accepted ? 'Remove friend' : incoming ? 'Decline' : 'Cancel request'}
