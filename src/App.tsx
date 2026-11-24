@@ -159,10 +159,11 @@ function Cover({ book, large = false }: { book: Book; large?: boolean }) {
   )
 }
 
-function BookCard({ book, onUpdate, onOpen }: {
+function BookCard({ book, onUpdate, onOpen, viewOnly }: {
   book: Book
   onUpdate: (id: string, changes: BookChanges) => Promise<void>
   onOpen: (view: BookView) => void
+  viewOnly: boolean
 }) {
   const [flipped, setFlipped] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -239,12 +240,15 @@ function BookCard({ book, onUpdate, onOpen }: {
         <div className="relative aspect-[2/3] w-full transition-transform duration-500 motion-reduce:transition-none"
           style={{ transformStyle: 'preserve-3d', transform: `rotateY(${flipped ? 180 : 0}deg)` }}>
           <div inert={flipped} className="absolute inset-0" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}>
-            <button ref={coverButton} type="button" aria-label={`Show actions for ${book.title}`} onClick={() => { setMenuOpen(false); setFlipped(true) }} className="block w-full rounded-[3px] focus-visible:outline-[#c7ff36]">
+            <button ref={coverButton} type="button" aria-label={viewOnly ? `View details for ${book.title}` : `Show actions for ${book.title}`} onClick={() => {
+              if (viewOnly) open('details')
+              else { setMenuOpen(false); setFlipped(true) }
+            }} className="block w-full rounded-[3px] focus-visible:outline-[#c7ff36]">
               <Cover book={book} large />
             </button>
-            <button type="button" aria-label={`Book options for ${book.title}`} aria-expanded={menuOpen} disabled={busy} onClick={() => setMenuOpen(!menuOpen)} className="absolute right-2 top-2 grid size-8 place-items-center rounded-full bg-black/75 text-white hover:bg-[#c7ff36] hover:text-black">
+            {!viewOnly && <button type="button" aria-label={`Book options for ${book.title}`} aria-expanded={menuOpen} disabled={busy} onClick={() => setMenuOpen(!menuOpen)} className="absolute right-2 top-2 grid size-8 place-items-center rounded-full bg-black/75 text-white hover:bg-[#c7ff36] hover:text-black">
               <Icon name="more" size={16} />
-            </button>
+            </button>}
             {menuOpen && (
               <div className="absolute inset-x-2 top-12 z-10 space-y-1 rounded-lg border border-white/15 bg-[#171219] p-1 text-xs font-semibold shadow-lg">
                 <label className="block cursor-pointer rounded px-2 py-2 hover:bg-white/10 focus-within:outline focus-within:outline-[#c7ff36]">
@@ -285,7 +289,9 @@ function BookCard({ book, onUpdate, onOpen }: {
       <h2 className="font-display text-[16px] font-semibold tracking-[-0.015em]"><button type="button" onClick={() => open('details')} className="block w-full truncate text-left hover:text-[#c7ff36]">{book.title}</button></h2>
       <p className="mt-1 truncate text-xs text-white/42">{book.author}</p>
       <div className="mt-3">
-        {book.status === 'Reading' ? (
+        {viewOnly ? (
+          book.rating !== null && <p className="text-xs font-semibold text-[#c7ff36]">Rated {book.rating}/10</p>
+        ) : book.status === 'Reading' ? (
           <>
             <div className="mb-1.5 flex justify-between text-[10px] font-medium uppercase tracking-[0.1em] text-white/35"><span>Reading</span><span>{book.progress}%</span></div>
             <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]"><div style={{ width: `${book.progress}%` }} className="h-full rounded-full bg-[#c7ff36]" /></div>
@@ -307,7 +313,7 @@ const bookViewTitles: Record<BookView, string> = {
   rating: 'Rate book',
 }
 
-function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onRemove }: {
+function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onRemove, viewOnly }: {
   book: Book
   view: BookView
   tagSuggestions: string[]
@@ -315,6 +321,7 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
   onOpen: (view: BookView) => void
   onUpdate: (id: string, changes: BookChanges) => Promise<void>
   onRemove: (id: string) => Promise<void>
+  viewOnly: boolean
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [busy, setBusy] = useState(false)
@@ -397,9 +404,9 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
             <div className="min-w-0">
               <h3 className="break-words font-display text-xl font-semibold">{book.title}</h3>
               <p className="mt-1 text-sm text-white/60">{book.author}</p>
-              <p className="mt-2 text-sm text-[#c7ff36]">{statusLabels[book.status]} · {book.progress}%</p>
-              {book.rating !== null && <p className="mt-1 text-sm text-white/70">You rated this a {book.rating}/10</p>}
-              {book.total_pages !== null && <p className="mt-1 text-sm text-white/70">Page {book.current_page} of {book.total_pages}</p>}
+              {!viewOnly && <p className="mt-2 text-sm text-[#c7ff36]">{statusLabels[book.status]} · {book.progress}%</p>}
+              {book.rating !== null && <p className="mt-1 text-sm text-white/70">{viewOnly ? 'Rated' : 'You rated this a'} {book.rating}/10</p>}
+              {!viewOnly && book.total_pages !== null && <p className="mt-1 text-sm text-white/70">Page {book.current_page} of {book.total_pages}</p>}
             </div>
           </div>
           {book.description && <p className="mt-5 whitespace-pre-wrap break-words text-sm leading-6 text-white/75">{book.description}</p>}
@@ -408,10 +415,10 @@ function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onR
             <li key={tag} className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-white/75">{tag}</li>,
           )}</ul>}
           {book.source_url && <a href={book.source_url} target="_blank" rel="noreferrer" className="mt-4 block text-sm text-[#c7ff36] underline">Book source</a>}
-          <div className="mt-5 flex flex-wrap gap-3">
+          {!viewOnly && <div className="mt-5 flex flex-wrap gap-3">
             <button type="button" onClick={() => onOpen('edit')} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Edit details</button>
             {book.status === 'Read' && book.rating === null && <button type="button" onClick={() => onOpen('rating')} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Rate book</button>}
-          </div>
+          </div>}
         </>
       ) : (
         <form onSubmit={save} className="space-y-4">
@@ -530,7 +537,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
   )
 
   useEffect(() => {
-    if (!discoveryReference) return
+    if (isGuest || !discoveryReference) return
     const reference = discoveryReference
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), 12000)
@@ -544,7 +551,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
       window.clearTimeout(timeout)
       controller.abort()
     }
-  }, [discoveryReference])
+  }, [discoveryReference, isGuest])
 
   useEffect(() => {
     if (!client) return
@@ -614,25 +621,19 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
   }
 
   async function updateBook(id: string, changes: BookChanges) {
-    let ratedAt = changes.rating == null ? null : new Date().toISOString()
-    if (!isGuest) {
-      if (!client) throw new Error('Supabase is unavailable.')
-      const { data, error } = await client.from('books').update(changes).eq('id', id).select('id, rated_at').single<Pick<Book, 'id' | 'rated_at'>>()
-      if (error || !data) throw error ?? new Error('Book not found.')
-      ratedAt = data.rated_at
-    }
+    if (!client) throw new Error('Supabase is unavailable.')
+    const { data, error } = await client.from('books').update(changes).eq('id', id).select('id, rated_at').single<Pick<Book, 'id' | 'rated_at'>>()
+    if (error || !data) throw error ?? new Error('Book not found.')
     setBooks((current) => current.map((book) => book.id === id
-      ? { ...book, ...changes, rated_at: 'rating' in changes ? ratedAt : book.rated_at }
+      ? { ...book, ...changes, rated_at: 'rating' in changes ? data.rated_at : book.rated_at }
       : book))
   }
 
   async function removeBook(id: string) {
-    if (!isGuest) {
-      if (!client) throw new Error('Supabase is unavailable.')
-      const { data, error } = await client.from('books').delete().eq('id', id).select('id').maybeSingle()
-      if (error) throw error
-      if (!data) throw new Error('Book not found.')
-    }
+    if (!client) throw new Error('Supabase is unavailable.')
+    const { data, error } = await client.from('books').delete().eq('id', id).select('id').maybeSingle()
+    if (error) throw error
+    if (!data) throw new Error('Book not found.')
     setBooks((current) => current.filter((book) => book.id !== id))
   }
 
@@ -686,7 +687,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
 
   async function addBook(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if ((!isGuest && !client) || loading || loadError || saving) return
+    if (!client || loading || loadError || saving) return
     const data = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter)
     const title = String(data.get('title') || '').trim()
     const author = String(data.get('author') || '').trim()
@@ -734,15 +735,8 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
         tags: cleanTags(String(data.get('tags') ?? '').split(',')),
         series: String(data.get('series') ?? '').trim() || null,
       }
-      let book: Book
-      if (isGuest) {
-        book = { ...values, id: crypto.randomUUID(), current_page: null, total_pages: null, rating: null, rated_at: null }
-      } else {
-        if (!client) throw new Error('Supabase is unavailable.')
-        const { data, error } = await client.from('books').insert(values).select(bookFields).single<Book>()
-        if (error) throw error
-        book = data
-      }
+      const { data: book, error } = await client.from('books').insert(values).select(bookFields).single<Book>()
+      if (error) throw error
       setBooks((current) => [book, ...current])
       setFilter(status === 'To Read' ? 'To Read' : 'All')
       setQuery('')
@@ -766,10 +760,10 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/35"><Icon name="search" size={18} /></span>
             <input value={query} onChange={(e) => setQuery(e.target.value)} className="h-10 w-full rounded-full border border-white/[0.08] bg-white/[0.045] pl-11 pr-4 text-sm outline-none transition focus:border-[#c7ff36]/60 focus:bg-white/[0.07]" placeholder="Search your library" />
           </div>
-          <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setShowFriends(false); setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
+          {!isGuest && <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setShowFriends(false); setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
             <Icon name="plus" size={17} /><span className="hidden sm:inline">Add Book</span>
-          </button>
-          <button onClick={signOut} className="shrink-0 text-xs text-white/60 hover:text-white">{isGuest ? 'Exit guest' : 'Sign out'}</button>
+          </button>}
+          <button onClick={signOut} className={`shrink-0 text-xs text-white/60 hover:text-white ${isGuest ? 'ml-auto' : ''}`}>{isGuest ? 'Exit guest' : 'Sign out'}</button>
         </div>
         {showFriends && signOutError && <p role="alert" className="px-5 pb-2 text-sm text-red-300">{signOutError}</p>}
       </header>
@@ -786,7 +780,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
             { label: 'Reading now', value: 'Reading', icon: 'clock' },
             { label: statusLabels['To Read'], value: 'To Read', icon: 'bookmark' },
             { label: 'Finished', value: 'Read', icon: 'check' },
-          ].map((item) => (
+          ].filter((item) => !isGuest || item.value !== 'To Read').map((item) => (
             <button key={item.value} onClick={() => { setShowFriends(false); setFilter(item.value as 'All' | Status) }} className={`mb-1 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm transition ${!showFriends && filter === item.value ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
               <span className={!showFriends && filter === item.value ? 'text-[#c7ff36]' : ''}><Icon name={item.icon as 'grid'} size={17} /></span>
               <span>{item.label}</span><span className="ml-auto text-xs text-white/25">{counts[item.value as keyof typeof counts]}</span>
@@ -802,10 +796,12 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
             <div>
               <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#c7ff36]">{isGuest ? 'Guest demo' : 'Personal library'}</p>
               <h1 className="font-display text-4xl font-medium tracking-[-0.045em] md:text-5xl">{filter === 'To Read' ? 'Wishlist' : 'Your collection'}</h1>
-              <p className="mt-3 max-w-lg text-sm leading-6 text-white/50">{isGuest ? 'Changes reset when you exit guest mode or refresh the page.' : 'A quiet place for every story you’re reading, loved, or still waiting to discover.'}</p>
+              {isGuest ? (
+                <p className="mt-3 max-w-lg rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-5 text-white/70">For demonstration purposes, you can only view my sample library and ratings.</p>
+              ) : <p className="mt-3 max-w-lg text-sm leading-6 text-white/40">A quiet place for every story you’re reading, loved, or still waiting to discover.</p>}
             </div>
             <div className="flex items-center gap-2 overflow-x-auto pb-1 lg:hidden">
-              {(['All', ...statusOrder] as const).map((item) => (
+              {(['All', ...statusOrder] as const).filter((item) => !isGuest || item !== 'To Read').map((item) => (
                 <button key={item} onClick={() => setFilter(item)} className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-medium ${filter === item ? 'bg-[#c7ff36] text-black' : 'bg-white/[0.06] text-white/50'}`}>{item === 'All' ? item : statusLabels[item]}</button>
               ))}
             </div>
@@ -815,7 +811,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
             </div>
           </div>
 
-          {!loading && !loadError && filter === 'All' && !query.trim() && books.length > 0 && (
+          {!isGuest && !loading && !loadError && filter === 'All' && !query.trim() && books.length > 0 && (
             <section aria-labelledby="recommendations-heading" className="mb-8 rounded-2xl border border-white/10 bg-white/[0.035] p-4 sm:p-5">
               <h2 id="recommendations-heading" className="font-display text-lg font-semibold">Recommended for you</h2>
               <h3 className="mt-4 text-sm font-semibold">From your collection</h3>
@@ -890,14 +886,14 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
           ) : visibleBooks.length > 0 ? (
             <div className="grid grid-cols-2 gap-x-4 gap-y-9 sm:grid-cols-3 md:gap-x-6 xl:grid-cols-4 2xl:grid-cols-5">
               {visibleBooks.map((book) => (
-                <BookCard key={book.id} book={book} onUpdate={updateBook} onOpen={(view) => setBookView({ id: book.id, view })} />
+                <BookCard key={book.id} book={book} viewOnly={isGuest} onUpdate={updateBook} onOpen={(view) => setBookView({ id: book.id, view })} />
               ))}
             </div>
           ) : (
             <div className="flex min-h-[360px] flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.02] text-center">
               <div className="mb-4 flex size-12 items-center justify-center rounded-full bg-[#32203d] text-[#c7ff36]"><Icon name="book" /></div>
               <h2 className="font-display text-xl font-semibold">{query.trim() ? 'No books found' : filter === 'To Read' ? 'Your wishlist is empty' : 'No books here yet'}</h2>
-              <p className="mt-2 text-sm text-white/35">{query.trim() ? 'Try another search.' : 'Use Add Book to add a title.'}</p>
+              <p className="mt-2 text-sm text-white/35">{query.trim() ? 'Try another search.' : isGuest ? 'Try another library filter.' : 'Use Add Book to add a title.'}</p>
             </div>
           )}
         </section>}
@@ -906,10 +902,10 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
       {bookView && activeBook && (
         <BookDialog key={`${bookView.id}:${bookView.view}`} book={activeBook} view={bookView.view} tagSuggestions={tagSuggestions}
           onClose={() => setBookView(null)} onOpen={(view) => setBookView({ id: activeBook.id, view })}
-          onUpdate={updateBook} onRemove={removeBook} />
+          onUpdate={updateBook} onRemove={removeBook} viewOnly={isGuest} />
       )}
 
-      {showAdd && (
+      {!isGuest && showAdd && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-5" onMouseDown={() => { if (!saving) setShowAdd(false) }}>
           <div role="dialog" aria-modal="true" aria-labelledby="add-book-heading" className="max-h-[100dvh] w-full max-w-lg overflow-y-auto rounded-t-[24px] border border-white/10 bg-[#171219] p-6 shadow-2xl sm:rounded-[24px] sm:p-8" onMouseDown={(e) => e.stopPropagation()}>
             <div className="mb-7 flex items-start justify-between">

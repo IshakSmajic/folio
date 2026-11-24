@@ -52,7 +52,7 @@ export default function AuthGate({ children, guest }: { children: (session: Sess
         </div>
         {guestTab ? (
           <div className="grid gap-4">
-            <p className="text-sm leading-6 text-white/70">Explore a sample library without an account. Changes reset when you leave the demo or refresh the page.</p>
+            <p className="text-sm leading-6 text-white/70">View a sample library and its ratings without an account.</p>
             <button type="button" onClick={() => setGuestActive(true)} className="rounded-xl bg-[#c7ff36] px-4 py-3 text-sm font-semibold text-black">Log in as guest</button>
           </div>
         ) : loading ? <p role="status">Loading your session...</p> : !supabase ? (
