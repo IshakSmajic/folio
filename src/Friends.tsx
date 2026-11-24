@@ -19,7 +19,12 @@ const primaryClass = 'rounded-xl bg-[#c7ff36] px-4 py-2 text-sm font-semibold te
 const secondaryClass = 'rounded-xl border border-white/15 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-50'
 const pageSize = 12
 
-function SharedLibrary({ friend, onBack, onChooseBook }: { friend: Profile; onBack: () => void; onChooseBook: (book: SharedBook) => void }) {
+function SharedLibrary({ friend, onBack, backLabel, onChooseBook }: {
+  friend: Profile
+  onBack: () => void
+  backLabel: string
+  onChooseBook: (book: SharedBook) => void
+}) {
   const [books, setBooks] = useState<SharedBook[]>([])
   const [pageOffset, setPageOffset] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -61,7 +66,7 @@ function SharedLibrary({ friend, onBack, onChooseBook }: { friend: Profile; onBa
 
   return (
     <section className="min-w-0 flex-1 px-5 py-8 md:px-9 md:py-11">
-      <button type="button" onClick={onBack} className="mb-4 text-sm font-semibold text-[#c7ff36]">← Back to friends</button>
+      <button type="button" onClick={onBack} className="mb-4 text-sm font-semibold text-[#c7ff36]">← {backLabel}</button>
       <h1 className="font-display text-4xl font-medium tracking-tight">@{friend.username}’s library</h1>
       {error && <p role="alert" className="mt-6 text-sm text-red-300">{error}</p>}
       {loading && <p role="status" className="mt-6 text-sm text-white/60">Loading library…</p>}
@@ -94,22 +99,27 @@ function SharedLibrary({ friend, onBack, onChooseBook }: { friend: Profile; onBa
   )
 }
 
-export default function Friends({ userId, onRequestsChanged, onChooseBook }: {
+export default function Friends({ userId, onRequestsChanged, onChooseBook, initialProfileId, onBackToRecommendations }: {
   userId: string
   onRequestsChanged: () => void
   onChooseBook: (book: SharedBook) => void
+  initialProfileId?: string | null
+  onBackToRecommendations?: () => void
 }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [username, setUsername] = useState('')
   const [libraryPublic, setLibraryPublic] = useState(false)
   const [friendName, setFriendName] = useState('')
   const [connections, setConnections] = useState<Friendship[]>([])
-  const [viewing, setViewing] = useState<Profile | null>(null)
+  const [viewingId, setViewingId] = useState(initialProfileId ?? null)
   const [loading, setLoading] = useState(true)
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const viewing = connections.filter((connection) => connection.accepted)
+    .map((connection) => connection.user_low === userId ? connection.high : connection.low)
+    .find((friend) => friend.user_id === viewingId)
 
   const loadConnections = useCallback(async (signal?: AbortSignal) => {
     if (!supabase) return
@@ -232,10 +242,21 @@ export default function Friends({ userId, onRequestsChanged, onChooseBook }: {
     }, 'Could not update this connection.')
   }
 
-  if (viewing) return <SharedLibrary key={viewing.user_id} friend={viewing} onChooseBook={onChooseBook} onBack={() => {
-    setViewing(null)
+  if (viewing) return <SharedLibrary key={viewing.user_id} friend={viewing} onChooseBook={onChooseBook}
+    backLabel={onBackToRecommendations ? 'Back to recommendations' : 'Back to friends'} onBack={onBackToRecommendations ?? (() => {
+    setViewingId(null)
     void loadConnections().catch(() => setError('Could not refresh your friends.'))
-  }} />
+  })} />
+
+  if (initialProfileId && onBackToRecommendations) {
+    return (
+      <section className="min-w-0 flex-1 px-5 py-8 md:px-9 md:py-11">
+        <button type="button" onClick={onBackToRecommendations} className="mb-4 text-sm font-semibold text-[#c7ff36]">← Back to recommendations</button>
+        {loading ? <p role="status" className="text-sm text-white/60">Loading friend’s profile…</p>
+          : <p role="alert" className="text-sm text-white/70">{error || 'This friend’s profile is no longer available.'}</p>}
+      </section>
+    )
+  }
 
   return (
     <section className="min-w-0 flex-1 px-5 py-8 md:px-9 md:py-11">
@@ -286,7 +307,7 @@ export default function Friends({ userId, onRequestsChanged, onChooseBook }: {
                       <li key={friend.user_id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 p-3">
                         <div className="min-w-0">
                           {connection.accepted ? (
-                            <button type="button" onClick={() => setViewing(friend)}
+                            <button type="button" onClick={() => setViewingId(friend.user_id)}
                               className="break-words text-left text-sm font-semibold text-[#c7ff36] underline decoration-[#c7ff36]/45 underline-offset-4 hover:decoration-current focus-visible:outline-[#c7ff36]">
                               @{friend.username}
                             </button>

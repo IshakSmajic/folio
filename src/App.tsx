@@ -496,6 +496,8 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
   const client = isGuest ? null : supabase
   const [books, setBooks] = useState<Book[]>(() => isGuest ? demoBooks() : [])
   const [socialView, setSocialView] = useState<'friends' | 'recommendations' | null>(null)
+  const [profileFromRecommendation, setProfileFromRecommendation] = useState<string | null>(null)
+  const [returnToConversation, setReturnToConversation] = useState<string | null>(null)
   const [incomingRequests, setIncomingRequests] = useState(0)
   const [unreadRecommendations, setUnreadRecommendations] = useState(0)
   const [notificationRefresh, setNotificationRefresh] = useState(0)
@@ -686,6 +688,17 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
     setShowAdd(true)
   }
 
+  function openFriends() {
+    setProfileFromRecommendation(null)
+    setSocialView('friends')
+  }
+
+  function openProfileFromRecommendation(friendId: string) {
+    setProfileFromRecommendation(friendId)
+    setReturnToConversation(friendId)
+    setSocialView('friends')
+  }
+
   async function openDiscoveryBook(book: BookMatch) {
     if (openingDiscovery) return
     setOpeningDiscovery(book.id)
@@ -804,7 +817,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
       <main className="mx-auto flex min-h-screen max-w-[1500px] flex-col pt-[72px] lg:flex-row">
         {!isGuest && <nav aria-label="Library and friends" className="flex flex-wrap gap-2 border-b border-white/10 px-5 py-3 lg:hidden">
           <button type="button" onClick={() => setSocialView(null)} aria-current={!socialView ? 'page' : undefined} className={`rounded-full px-3 py-2 text-sm ${socialView ? 'text-white/60' : 'bg-[#372443] text-white'}`}>Library</button>
-          <button type="button" onClick={() => setSocialView('friends')} aria-current={socialView === 'friends' ? 'page' : undefined} className={`rounded-full px-3 py-2 text-sm ${socialView === 'friends' ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends{friendBadge}</button>
+          <button type="button" onClick={openFriends} aria-current={socialView === 'friends' ? 'page' : undefined} className={`rounded-full px-3 py-2 text-sm ${socialView === 'friends' ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends{friendBadge}</button>
           <button type="button" onClick={() => setSocialView('recommendations')} aria-current={socialView === 'recommendations' ? 'page' : undefined} className={`rounded-full px-3 py-2 text-sm ${socialView === 'recommendations' ? 'bg-[#372443] text-white' : 'text-white/60'}`}>Friends Recommendations{recommendationBadge}</button>
         </nav>}
         <aside className="hidden w-[242px] shrink-0 border-r border-white/[0.07] px-5 py-8 lg:block">
@@ -821,7 +834,7 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
             </button>
           ))}
           {!isGuest && <>
-            <button type="button" aria-current={socialView === 'friends' ? 'page' : undefined} onClick={() => setSocialView('friends')} className={`mt-3 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm ${socialView === 'friends' ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
+            <button type="button" aria-current={socialView === 'friends' ? 'page' : undefined} onClick={openFriends} className={`mt-3 flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm ${socialView === 'friends' ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
               <span className={socialView === 'friends' ? 'text-[#c7ff36]' : ''}><Icon name="friends" size={17} /></span><span>Friends{friendBadge}</span>
             </button>
             <button type="button" aria-current={socialView === 'recommendations' ? 'page' : undefined} onClick={() => setSocialView('recommendations')} className={`mt-1 flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${socialView === 'recommendations' ? 'bg-[#372443] text-white' : 'text-white/50 hover:bg-white/[0.04] hover:text-white'}`}>
@@ -830,8 +843,10 @@ function Library({ userId, onExitGuest }: { userId: string | null; onExitGuest?:
           </>}
         </aside>
 
-        {socialView === 'friends' && userId !== null ? <Friends userId={userId} onRequestsChanged={refreshNotifications} onChooseBook={chooseSharedBook} />
-          : socialView === 'recommendations' && userId !== null ? <FriendRecommendations userId={userId} onUnreadChanged={refreshNotifications} onChooseBook={chooseSharedBook} />
+        {socialView === 'friends' && userId !== null ? <Friends key={profileFromRecommendation ?? 'friends'} userId={userId} onRequestsChanged={refreshNotifications} onChooseBook={chooseSharedBook}
+          initialProfileId={profileFromRecommendation} onBackToRecommendations={profileFromRecommendation ? () => setSocialView('recommendations') : undefined} />
+          : socialView === 'recommendations' && userId !== null ? <FriendRecommendations userId={userId} onUnreadChanged={refreshNotifications} onChooseBook={chooseSharedBook}
+            initialFriendId={returnToConversation} onOpenProfile={openProfileFromRecommendation} />
           : <section className="min-w-0 flex-1 px-5 pb-14 pt-8 md:px-9 md:pt-11 xl:px-12">
           <div className="mb-8 flex flex-col justify-between gap-6 md:flex-row md:items-end">
             <div>

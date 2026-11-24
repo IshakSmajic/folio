@@ -133,13 +133,15 @@ export function RecommendationComposer({ userId, bookId, title, rating, onDone }
   )
 }
 
-export default function FriendRecommendations({ userId, onUnreadChanged, onChooseBook }: {
+export default function FriendRecommendations({ userId, onUnreadChanged, onChooseBook, initialFriendId, onOpenProfile }: {
   userId: string
   onUnreadChanged: () => void
   onChooseBook: (book: SharedBook) => void
+  initialFriendId: string | null
+  onOpenProfile: (friendId: string) => void
 }) {
   const [messages, setMessages] = useState<Message[]>([])
-  const [activeFriend, setActiveFriend] = useState<string | null>(null)
+  const [activeFriend, setActiveFriend] = useState(initialFriendId)
   const [loading, setLoading] = useState(true)
   const [hasEarlier, setHasEarlier] = useState(false)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
@@ -148,6 +150,7 @@ export default function FriendRecommendations({ userId, onUnreadChanged, onChoos
   const [retry, setRetry] = useState(0)
   const exhaustedHistory = useRef(false)
   const chatHistory = useRef<HTMLOListElement>(null)
+  const loadedFirstPage = useRef(false)
 
   useEffect(() => {
     const client = supabase
@@ -171,8 +174,12 @@ export default function FriendRecommendations({ userId, onUnreadChanged, onChoos
         })
         const unread = data.find((message) => message.recipient_id === userId && message.read_at === null)
         const latest = data[0]
-        setActiveFriend((current) => current ?? unread?.sender_id ??
-          (latest ? (latest.sender_id === userId ? latest.recipient_id : latest.sender_id) : null))
+        const firstPage = !loadedFirstPage.current
+        loadedFirstPage.current = true
+        setActiveFriend((current) => {
+          if (current && (!firstPage || data.some((message) => message.sender_id === current || message.recipient_id === current))) return current
+          return unread?.sender_id ?? (latest ? (latest.sender_id === userId ? latest.recipient_id : latest.sender_id) : null)
+        })
         setHasEarlier(data.length === pageSize && !exhaustedHistory.current)
         setError('')
       } catch {
@@ -300,7 +307,11 @@ export default function FriendRecommendations({ userId, onUnreadChanged, onChoos
               <>
                 <header className="flex items-center gap-3 border-b border-white/10 bg-[#141216] px-4 py-3 sm:px-5">
                   <FriendInitial name={activeThread.name} selected />
-                  <h2 className="min-w-0 truncate font-display text-sm font-semibold sm:text-base">@{activeThread.name}</h2>
+                  <h2 className="min-w-0 flex-1 truncate font-display text-sm font-semibold sm:text-base">@{activeThread.name}</h2>
+                  {activeFriend && <button type="button" onClick={() => onOpenProfile(activeFriend)}
+                    className="shrink-0 rounded-lg border border-white/15 px-2.5 py-1.5 text-xs font-semibold text-white/75 hover:border-[#c7ff36]/40 hover:text-[#c7ff36] focus-visible:outline-[#c7ff36]">
+                    View profile
+                  </button>}
                 </header>
                 {readError && <button type="button" onClick={() => setReadError(false)} className="mx-4 mt-3 text-xs text-red-300 underline">Retry marking recommendations as read</button>}
                 <ol ref={chatHistory} aria-label={`Recommendations with @${activeThread.name}`} className="min-h-64 max-h-[min(59dvh,35rem)] space-y-3 overflow-y-auto px-3 py-4 sm:min-h-80 sm:px-5">
