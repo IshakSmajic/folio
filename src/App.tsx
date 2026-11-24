@@ -1,7 +1,8 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import AuthGate from './AuthGate'
 import BookSearch from './BookSearch'
-import type { BookMatch } from './openLibrary'
+import { type BookMatch, catalogIdentity, discoverBooks, loadBookMetadata } from './openLibrary'
+import { cleanTags, latestRatedBook, normalizeTag, recommendBooks } from './recommendations'
 import { supabase } from './supabase'
 
 type Status = 'Unread' | 'Reading' | 'To Read' | 'Read'
@@ -12,6 +13,8 @@ type Book = {
   author: string
   status: Status
   progress: number
+  current_page: number | null
+  total_pages: number | null
   palette: string
   mark: string
   category: string
@@ -19,14 +22,49 @@ type Book = {
   description: string | null
   cover_url: string | null
   source_url: string | null
+  rating: number | null
+  rated_at: string | null
+  tags: string[]
+  series: string | null
 }
+
+type BookChanges = Partial<Pick<Book, 'title' | 'author' | 'description' | 'mark' | 'status' | 'progress' | 'cover_photo' | 'current_page' | 'total_pages' | 'rating' | 'tags' | 'series'>>
+type BookView = 'details' | 'edit' | 'progress' | 'wishlist' | 'remove' | 'rating'
 
 const statusOrder = ['Reading', 'To Read', 'Read'] as const
 const statusPriority: Record<Status, number> = { Read: 0, Reading: 1, Unread: 2, 'To Read': 3 }
 const statusLabels: Record<Status, string> = { Unread: 'Unread', Reading: 'Reading', 'To Read': 'Wishlist', Read: 'Read' }
-const bookFields = 'id, title, author, status, progress, palette, mark, category, cover_photo, description, cover_url, source_url'
+const bookFields = 'id, title, author, status, progress, current_page, total_pages, palette, mark, category, cover_photo, description, cover_url, source_url, rating, rated_at, tags, series'
 const coverTypes = ['image/jpeg', 'image/png', 'image/webp']
 const maxCoverLength = 262144
+
+function normalizedBookText(value: string) {
+  return value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function TagsField({ initialTags, suggestions }: { initialTags: string[]; suggestions: string[] }) {
+  const [value, setValue] = useState(initialTags.join(', '))
+  const tags = cleanTags(value.split(','))
+  const selected = new Set(tags.map(normalizeTag))
+  const available = suggestions.filter((tag) => !selected.has(normalizeTag(tag))).slice(0, 6)
+
+  return (
+    <div className="mb-5">
+      <label className="block text-sm text-white/70">
+        Tags (optional)
+        <input name="tags" value={value} onChange={(event) => setValue(event.target.value)} maxLength={1240}
+          placeholder="e.g. Black Templars, siege defense" className="mt-2 w-full rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-white" />
+      </label>
+      <p className="mt-1 text-xs text-white/50">Separate tags with commas.</p>
+      {tags.length < 20 && available.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2" aria-label="Tags from your library">
+          {available.map((tag) => <button key={tag} type="button" onClick={() => setValue([...tags, tag].join(', '))}
+            className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-white/75 hover:bg-white/20">+ {tag}</button>)}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function validCover(file: File) {
   return coverTypes.includes(file.type) && file.size <= 10 * 1024 * 1024
@@ -56,7 +94,7 @@ function Icon({
   name,
   size = 20,
 }: {
-  name: 'search' | 'plus' | 'book' | 'grid' | 'bookmark' | 'check' | 'clock' | 'more' | 'close' | 'arrow' | 'chevron-left'
+  name: 'search' | 'plus' | 'book' | 'grid' | 'bookmark' | 'check' | 'clock' | 'more' | 'close' | 'arrow'
   size?: number
 }) {
   const paths = {
@@ -69,7 +107,6 @@ function Icon({
     clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
     more: <><circle cx="5" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="19" cy="12" r="1" fill="currentColor" /></>,
     close: <><path d="m6 6 12 12M18 6 6 18" /></>,
-    'chevron-left': <path d="m15 18-6-6 6-6" />,
     arrow: <><path d="M5 12h14M13 6l6 6-6 6" /></>,
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
@@ -86,19 +123,43 @@ function Cover({ book, large = false }: { book: Book; large?: boolean }) {
         {book.mark}
       </span>
       {large && <span className="absolute bottom-4 left-4 right-3 text-[9px] uppercase tracking-[0.16em] text-white/75">{book.author}</span>}
-      {cover && <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" className="absolute inset-0 size-full object-cover" onError={(event) => { event.currentTarget.hidden = true }} />}
+      {cover && <img key={cover} src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" className="absolute inset-0 size-full object-cover" onError={(event) => { event.currentTarget.hidden = true }} />}
     </div>
   )
 }
 
-function BookCard({ book, onUpdate }: {
+function BookCard({ book, onUpdate, onOpen }: {
   book: Book
-  onUpdate: (id: string, changes: Partial<Pick<Book, 'status' | 'progress' | 'cover_photo'>>) => Promise<void>
+  onUpdate: (id: string, changes: BookChanges) => Promise<void>
+  onOpen: (view: BookView) => void
 }) {
   const [flipped, setFlipped] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const flipArea = useRef<HTMLDivElement>(null)
+  const coverButton = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!flipped) return
+
+    function handleOutsidePointer(event: PointerEvent) {
+      if (event.target instanceof Node && !flipArea.current?.contains(event.target)) setFlipped(false)
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.key !== 'Escape' || !flipArea.current?.contains(document.activeElement)) return
+      setFlipped(false)
+      requestAnimationFrame(() => coverButton.current?.focus())
+    }
+
+    document.addEventListener('pointerdown', handleOutsidePointer, true)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointer, true)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [flipped])
 
   async function update(action: () => Promise<void>, message: string) {
     setBusy(true)
@@ -125,43 +186,64 @@ function BookCard({ book, onUpdate }: {
   }
 
   function changeStatus(status: Status) {
-    const progress = status === 'Read' ? 100 : status === 'Reading' && book.status === 'Reading' ? book.progress : 0
-    void update(() => onUpdate(book.id, { status, progress }), 'Could not update the book. Try again.')
+    const changes: BookChanges = { status }
+    if (status === 'Read') {
+      changes.progress = 100
+      changes.current_page = book.total_pages
+    } else if (status === 'Reading' && book.progress === 100) {
+      changes.progress = 0
+      changes.current_page = book.total_pages === null ? null : 0
+    }
+    void update(() => onUpdate(book.id, changes), 'Could not update the book. Try again.')
+  }
+
+  function open(view: BookView) {
+    setMenuOpen(false)
+    onOpen(view)
   }
 
   return (
     <article className="min-w-0">
-      <div className="relative mb-4 [perspective:1000px]">
+      <div ref={flipArea} className="relative mb-4 [perspective:1000px]">
         <div className="relative aspect-[2/3] w-full transition-transform duration-500 motion-reduce:transition-none"
           style={{ transformStyle: 'preserve-3d', transform: `rotateY(${flipped ? 180 : 0}deg)` }}>
           <div inert={flipped} className="absolute inset-0" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}>
-            <button type="button" aria-label={`Show actions for ${book.title}`} onClick={() => { setMenuOpen(false); setFlipped(true) }} className="block w-full rounded-[3px] focus-visible:outline-[#c7ff36]">
+            <button ref={coverButton} type="button" aria-label={`Show actions for ${book.title}`} onClick={() => { setMenuOpen(false); setFlipped(true) }} className="block w-full rounded-[3px] focus-visible:outline-[#c7ff36]">
               <Cover book={book} large />
             </button>
-            <button type="button" aria-label={`Cover options for ${book.title}`} aria-expanded={menuOpen} disabled={busy} onClick={() => setMenuOpen(!menuOpen)} className="absolute right-2 top-2 grid size-8 place-items-center rounded-full bg-black/75 text-white hover:bg-[#c7ff36] hover:text-black">
+            <button type="button" aria-label={`Book options for ${book.title}`} aria-expanded={menuOpen} disabled={busy} onClick={() => setMenuOpen(!menuOpen)} className="absolute right-2 top-2 grid size-8 place-items-center rounded-full bg-black/75 text-white hover:bg-[#c7ff36] hover:text-black">
               <Icon name="more" size={16} />
             </button>
             {menuOpen && (
-              <label className="absolute right-2 top-12 z-10 cursor-pointer rounded-lg border border-white/15 bg-[#171219] px-3 py-2 text-xs font-semibold shadow-lg focus-within:outline focus-within:outline-[#c7ff36]">
-                Change cover
-                <input type="file" accept={coverTypes.join(',')} className="sr-only" onChange={(event) => {
-                  const file = event.currentTarget.files?.[0]
-                  if (file) changeCover(file)
-                }} />
-              </label>
+              <div className="absolute inset-x-2 top-12 z-10 space-y-1 rounded-lg border border-white/15 bg-[#171219] p-1 text-xs font-semibold shadow-lg">
+                <label className="block cursor-pointer rounded px-2 py-2 hover:bg-white/10 focus-within:outline focus-within:outline-[#c7ff36]">
+                  Change cover
+                  <input type="file" accept={coverTypes.join(',')} className="sr-only" onChange={(event) => {
+                    const file = event.currentTarget.files?.[0]
+                    if (file) changeCover(file)
+                  }} />
+                </label>
+                <button type="button" onClick={() => open('edit')} className="block w-full rounded px-2 py-2 text-left hover:bg-white/10">Edit details</button>
+                {book.status !== 'To Read' && <button type="button" onClick={() => open('wishlist')} className="block w-full rounded px-2 py-2 text-left hover:bg-white/10">Move to wishlist</button>}
+                <button type="button" onClick={() => open('remove')} className="block w-full rounded px-2 py-2 text-left text-red-300 hover:bg-white/10">Remove book</button>
+              </div>
             )}
           </div>
           <div inert={!flipped} className="absolute inset-0 rounded-[3px] border border-white/10 bg-black"
             style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
-            <button type="button" aria-label={`Back to cover for ${book.title}`} onClick={() => setFlipped(false)} className="absolute left-1.5 top-1.5 z-10 grid size-7 place-items-center rounded-full text-white/75 hover:bg-white/10 hover:text-white"><Icon name="chevron-left" size={15} /></button>
-            <div className="absolute inset-x-0 bottom-0 top-9 flex flex-col overflow-y-auto px-2.5 pb-2.5 sm:px-4 sm:pb-4">
+            <div className="absolute inset-0 flex flex-col overflow-y-auto p-2.5 sm:p-4">
               <div className="my-auto space-y-2 py-2">
               {book.status === 'To Read' ? (
                 <button type="button" disabled={busy} onClick={() => changeStatus('Unread')} className="w-full rounded-lg bg-[#c7ff36] px-2 py-2 text-xs font-semibold text-black disabled:opacity-50">Add to collection</button>
               ) : (
                 <>
-                  <button type="button" disabled={busy || book.status === 'Read'} onClick={() => changeStatus('Read')} className="w-full rounded-lg bg-[#c7ff36] px-2 py-2 text-xs font-semibold text-black disabled:opacity-50">Mark as read</button>
+                  {book.status === 'Read' && book.rating !== null ? (
+                    <p className="text-center text-xs font-semibold text-[#c7ff36]">You rated this a {book.rating}/10</p>
+                  ) : (
+                    <button type="button" disabled={busy} onClick={() => book.rating === null ? open('rating') : changeStatus('Read')} className="w-full rounded-lg bg-[#c7ff36] px-2 py-2 text-xs font-semibold text-black disabled:opacity-50">{book.status === 'Read' ? 'Rate book' : 'Mark as read'}</button>
+                  )}
                   <button type="button" disabled={busy || book.status === 'Reading'} onClick={() => changeStatus('Reading')} className="w-full rounded-lg bg-white/10 px-2 py-2 text-xs font-semibold disabled:opacity-50">Mark as reading now</button>
+                  {book.status === 'Reading' && <button type="button" disabled={busy} onClick={() => open('progress')} className="w-full rounded-lg bg-white/10 px-2 py-2 text-xs font-semibold disabled:opacity-50">Update progress</button>}
                 </>
               )}
               </div>
@@ -169,15 +251,8 @@ function BookCard({ book, onUpdate }: {
           </div>
         </div>
       </div>
-      <h2 className="truncate font-display text-[16px] font-semibold tracking-[-0.015em]">{book.title}</h2>
+      <h2 className="font-display text-[16px] font-semibold tracking-[-0.015em]"><button type="button" onClick={() => open('details')} className="block w-full truncate text-left hover:text-[#c7ff36]">{book.title}</button></h2>
       <p className="mt-1 truncate text-xs text-white/42">{book.author}</p>
-      {(book.description || book.source_url) && (
-        <details className="mt-2 text-xs text-white/60">
-          <summary className="cursor-pointer">Book details</summary>
-          {book.description && <p className="mt-2 whitespace-pre-wrap break-words leading-5">{book.description}</p>}
-          {book.source_url && <a href={book.source_url} target="_blank" rel="noreferrer" className="mt-2 inline-block underline">Book source</a>}
-        </details>
-      )}
       <div className="mt-3">
         {book.status === 'Reading' ? (
           <>
@@ -189,6 +264,166 @@ function BookCard({ book, onUpdate }: {
       {busy && <p role="status" className="mt-2 text-xs text-white/60">Saving…</p>}
       {error && <p role="alert" className="mt-2 text-xs text-red-300">{error}</p>}
     </article>
+  )
+}
+
+const bookViewTitles: Record<BookView, string> = {
+  details: 'Book details',
+  edit: 'Edit book',
+  progress: 'Update progress',
+  wishlist: 'Move to wishlist',
+  remove: 'Remove book',
+  rating: 'Rate book',
+}
+
+function BookDialog({ book, view, tagSuggestions, onClose, onOpen, onUpdate, onRemove }: {
+  book: Book
+  view: BookView
+  tagSuggestions: string[]
+  onClose: () => void
+  onOpen: (view: BookView) => void
+  onUpdate: (id: string, changes: BookChanges) => Promise<void>
+  onRemove: (id: string) => Promise<void>
+}) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [rating, setRating] = useState(book.rating ?? 5)
+  const inputClass = 'mt-2 w-full rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-white'
+  const buttonClass = 'rounded-xl bg-[#c7ff36] px-4 py-2 text-sm font-semibold text-black disabled:opacity-50'
+
+  useEffect(() => {
+    const element = dialog.current
+    element?.showModal()
+    return () => element?.close()
+  }, [])
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+    setError('')
+    const data = new FormData(event.currentTarget)
+    let changes: BookChanges = {}
+
+    if (view === 'edit') {
+      const title = String(data.get('title')).trim()
+      const author = String(data.get('author')).trim()
+      if (!title || !author) {
+        setError('Enter a book title and author.')
+        return
+      }
+      changes = {
+        title, author, mark: title.toUpperCase(), description: String(data.get('description')).trim() || null,
+        tags: cleanTags(String(data.get('tags') ?? '').split(',')),
+        series: String(data.get('series') ?? '').trim() || null,
+      }
+    } else if (view === 'progress') {
+      const currentPage = Number(data.get('currentPage'))
+      const totalPages = Number(data.get('totalPages'))
+      if (!Number.isInteger(currentPage) || !Number.isInteger(totalPages) || currentPage < 0 || totalPages <= 0 || totalPages > 2147483647 || currentPage > totalPages) {
+        setError('Enter a current page from zero through the total page count.')
+        return
+      }
+      changes = {
+        current_page: currentPage,
+        total_pages: totalPages,
+        progress: currentPage === totalPages ? 100 : Math.min(99, Math.round(currentPage / totalPages * 100)),
+      }
+    } else if (view === 'wishlist') {
+      changes = { status: 'To Read' }
+    } else if (view === 'rating') {
+      if (book.rating !== null) {
+        setError('This book already has a saved rating.')
+        return
+      }
+      const submitter = (event.nativeEvent as SubmitEvent).submitter
+      changes = { status: 'Read', progress: 100, current_page: book.total_pages, rating: submitter?.getAttribute('value') === 'skip' ? null : rating }
+    }
+
+    setBusy(true)
+    try {
+      if (view === 'remove') await onRemove(book.id)
+      else await onUpdate(book.id, changes)
+      onClose()
+    } catch {
+      setError(view === 'remove' ? 'Could not remove this book. Try again.' : 'Could not save your changes. Try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <dialog ref={dialog} aria-labelledby="book-dialog-heading" onCancel={(event) => { event.preventDefault(); if (!busy) onClose() }}
+      className="fixed inset-0 m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-3xl border border-white/10 bg-[#171219] p-6 text-white backdrop:bg-black/75">
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <h2 id="book-dialog-heading" className="font-display text-2xl font-semibold">{bookViewTitles[view]}</h2>
+        <button type="button" aria-label="Close" disabled={busy} onClick={onClose} className="grid size-8 shrink-0 place-items-center rounded-full bg-white/10"><Icon name="close" size={16} /></button>
+      </div>
+      {view === 'details' ? (
+        <>
+          <div className="flex items-start gap-4">
+            <div className="w-20 shrink-0"><Cover book={book} large /></div>
+            <div className="min-w-0">
+              <h3 className="break-words font-display text-xl font-semibold">{book.title}</h3>
+              <p className="mt-1 text-sm text-white/60">{book.author}</p>
+              <p className="mt-2 text-sm text-[#c7ff36]">{statusLabels[book.status]} · {book.progress}%</p>
+              {book.rating !== null && <p className="mt-1 text-sm text-white/70">You rated this a {book.rating}/10</p>}
+              {book.total_pages !== null && <p className="mt-1 text-sm text-white/70">Page {book.current_page} of {book.total_pages}</p>}
+            </div>
+          </div>
+          {book.description && <p className="mt-5 whitespace-pre-wrap break-words text-sm leading-6 text-white/75">{book.description}</p>}
+          {book.series && <p className="mt-4 text-sm text-white/70">Series · {book.series}</p>}
+          {book.tags.length > 0 && <ul className="mt-4 flex flex-wrap gap-2">{book.tags.map((tag) =>
+            <li key={tag} className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-white/75">{tag}</li>,
+          )}</ul>}
+          {book.source_url && <a href={book.source_url} target="_blank" rel="noreferrer" className="mt-4 block text-sm text-[#c7ff36] underline">Book source</a>}
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button type="button" onClick={() => onOpen('edit')} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Edit details</button>
+            {book.status === 'Read' && book.rating === null && <button type="button" onClick={() => onOpen('rating')} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Rate book</button>}
+          </div>
+        </>
+      ) : (
+        <form onSubmit={save} className="space-y-4">
+          {view === 'edit' && (
+            <>
+              <label className="block text-sm">Book title<input autoFocus required name="title" defaultValue={book.title} className={inputClass} /></label>
+              <label className="block text-sm">Author<input required name="author" defaultValue={book.author} className={inputClass} /></label>
+              <label className="block text-sm">Description<textarea name="description" maxLength={4000} rows={5} defaultValue={book.description ?? ''} className={inputClass} /></label>
+              <label className="block text-sm">Series (optional)<input name="series" maxLength={120} defaultValue={book.series ?? ''} className={inputClass} /></label>
+              <TagsField initialTags={book.tags} suggestions={tagSuggestions} />
+            </>
+          )}
+          {view === 'rating' && (
+            <label className="block text-sm">
+              <span className="flex justify-between gap-3"><span>{book.title}</span><span className="font-semibold text-[#c7ff36]">{rating}/10</span></span>
+              <input type="range" min={1} max={10} step={1} value={rating} onChange={(event) => setRating(event.target.valueAsNumber)}
+                aria-label="Your rating" className="mt-3 w-full accent-[#c7ff36]" />
+              <span className="mt-1 flex justify-between text-xs text-white/60"><span>1</span><span>10</span></span>
+              <span className="mt-3 block text-xs text-white/60">Your rating is permanent once saved.</span>
+            </label>
+          )}
+          {view === 'progress' && (
+            <>
+              <p className="text-sm text-white/70">{book.title} · {book.progress}%</p>
+              <label className="block text-sm">Current page<input autoFocus required name="currentPage" type="number" min={0} max={2147483647} defaultValue={book.current_page ?? undefined} className={inputClass} /></label>
+              <label className="block text-sm">Total pages<input required name="totalPages" type="number" min={1} max={2147483647} defaultValue={book.total_pages ?? undefined} className={inputClass} /></label>
+            </>
+          )}
+          {view === 'wishlist' && <p className="text-sm text-white/75">Move <strong>{book.title}</strong> to your wishlist? Its reading progress will be saved.</p>}
+          {view === 'remove' && <p className="text-sm text-white/75">Remove <strong>{book.title}</strong> and its reading progress from your library?</p>}
+          {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+          <div className="flex flex-wrap justify-end gap-3">
+            <button type="button" autoFocus={view === 'remove' || view === 'wishlist'} disabled={busy} onClick={onClose} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Cancel</button>
+            <button type="submit" disabled={busy} className={view === 'remove' ? 'rounded-xl bg-red-300 px-4 py-2 text-sm font-semibold text-black disabled:opacity-50' : buttonClass}>
+              {busy ? 'Saving…' : view === 'remove' || view === 'wishlist' ? bookViewTitles[view] : view === 'rating' ? 'Save rating' : 'Save changes'}
+            </button>
+            {view === 'rating' && book.status !== 'Read' && (
+              <button type="submit" value="skip" disabled={busy} className="rounded-xl border border-white/15 px-4 py-2 text-sm">Skip rating</button>
+            )}
+          </div>
+        </form>
+      )}
+    </dialog>
   )
 }
 
@@ -204,12 +439,36 @@ function Library() {
   const [showAdd, setShowAdd] = useState(false)
   const [draft, setDraft] = useState<Omit<BookMatch, 'id' | 'sourceUrl'> & { sourceUrl: string | null } | null>(null)
   const [keepCover, setKeepCover] = useState(true)
+  const [duplicateId, setDuplicateId] = useState<string | null>(null)
+  const [allowDuplicate, setAllowDuplicate] = useState(false)
+  const [bookView, setBookView] = useState<{ id: string; view: BookView } | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
   const [signOutError, setSignOutError] = useState('')
+  const [discovery, setDiscovery] = useState<{ reference: Book; matches: BookMatch[]; failed: boolean } | null>(null)
+  const [openingDiscovery, setOpeningDiscovery] = useState<string | null>(null)
+  const latestRating = useMemo(() => latestRatedBook(books), [books])
+  const discoveryReference = latestRating && (latestRating.rating ?? 0) > 5 ? latestRating : null
+
+  useEffect(() => {
+    if (!discoveryReference) return
+    const reference = discoveryReference
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 12000)
+    let active = true
+    discoverBooks(reference, controller.signal).then(
+      (matches) => { if (active) setDiscovery({ reference, matches, failed: false }) },
+      () => { if (active) setDiscovery({ reference, matches: [], failed: true }) },
+    ).finally(() => window.clearTimeout(timeout))
+    return () => {
+      active = false
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [discoveryReference])
 
   useEffect(() => {
     if (!supabase) return
@@ -253,6 +512,18 @@ function Library() {
     'To Read': books.filter((book) => book.status === 'To Read').length,
     Read: books.filter((book) => book.status === 'Read').length,
   }), [books])
+  const recommendations = useMemo(() => recommendBooks(books, latestRating), [books, latestRating])
+  const discoveryResult = discovery?.reference === discoveryReference ? discovery : null
+  const outsideRecommendations = useMemo(() => {
+    if (!discoveryReference || !discoveryResult) return []
+    const savedUrls = new Set(books.map((book) => book.source_url))
+    const savedTitles = new Set(books.map((book) => catalogIdentity(book.title, book.author)))
+    const candidates = discoveryResult.matches
+      .filter((book) => !savedUrls.has(book.sourceUrl) && !savedTitles.has(catalogIdentity(book.title, book.author)))
+      .map((book) => ({ ...book, status: 'Unread', rating: null, rated_at: null, source_url: book.sourceUrl }))
+    return recommendBooks(candidates, discoveryReference)
+  }, [books, discoveryReference, discoveryResult])
+  const tagSuggestions = useMemo(() => cleanTags(books.flatMap((book) => book.tags)).sort((a, b) => a.localeCompare(b)), [books])
 
   const visibleBooks = books.filter((book) => {
     const matchesFilter = filter === 'All' ? book.status !== 'To Read' : book.status === filter
@@ -263,11 +534,69 @@ function Library() {
     visibleBooks.sort((first, second) => statusPriority[first.status] - statusPriority[second.status])
   }
 
-  async function updateBook(id: string, changes: Partial<Pick<Book, 'status' | 'progress' | 'cover_photo'>>) {
+  async function updateBook(id: string, changes: BookChanges) {
     if (!supabase) throw new Error('Supabase is unavailable.')
-    const { data, error } = await supabase.from('books').update(changes).eq('id', id).select('id').single()
+    const { data, error } = await supabase.from('books').update(changes).eq('id', id).select('id, rated_at').single<Pick<Book, 'id' | 'rated_at'>>()
     if (error || !data) throw error ?? new Error('Book not found.')
-    setBooks((current) => current.map((book) => book.id === id ? { ...book, ...changes } : book))
+    setBooks((current) => current.map((book) => book.id === id
+      ? { ...book, ...changes, rated_at: 'rating' in changes ? data.rated_at : book.rated_at }
+      : book))
+  }
+
+  async function removeBook(id: string) {
+    if (!supabase) throw new Error('Supabase is unavailable.')
+    const { data, error } = await supabase.from('books').delete().eq('id', id).select('id').maybeSingle()
+    if (error) throw error
+    if (!data) throw new Error('Book not found.')
+    setBooks((current) => current.filter((book) => book.id !== id))
+  }
+
+  function findDuplicate(title: string, author: string, sourceUrl?: string | null) {
+    const titleKey = normalizedBookText(title)
+    const authorKey = normalizedBookText(author)
+    return books.find((book) => (sourceUrl && book.source_url === sourceUrl) ||
+      (authorKey && normalizedBookText(book.title) === titleKey && normalizedBookText(book.author) === authorKey))
+  }
+
+  function clearDuplicate() {
+    setDuplicateId(null)
+    setAllowDuplicate(false)
+  }
+
+  function chooseCatalogBook(book: BookMatch) {
+    setKeepCover(true)
+    setDuplicateId(findDuplicate(book.title, book.author, book.sourceUrl)?.id ?? null)
+    setDraft(book)
+  }
+
+  async function openDiscoveryBook(book: BookMatch) {
+    if (openingDiscovery) return
+    setOpeningDiscovery(book.id)
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 8000)
+    let selected = book
+    try {
+      selected = await loadBookMetadata(book, controller.signal)
+    } catch {
+      // The search metadata remains usable if the work lookup fails.
+    } finally {
+      window.clearTimeout(timeout)
+      setOpeningDiscovery(null)
+    }
+    clearDuplicate()
+    setSaveError('')
+    chooseCatalogBook(selected)
+    setShowAdd(true)
+  }
+
+  const duplicate = books.find((book) => book.id === duplicateId)
+  const activeBook = books.find((book) => book.id === bookView?.id)
+
+  function openDuplicate(book: Book) {
+    setShowAdd(false)
+    setFilter(book.status === 'To Read' ? 'To Read' : 'All')
+    setQuery('')
+    setBookView({ id: book.id, view: 'details' })
   }
 
   async function addBook(event: FormEvent<HTMLFormElement>) {
@@ -279,6 +608,14 @@ function Library() {
     const status: Status = data.get('destination') === 'wishlist' ? 'To Read' : 'Unread'
     const description = String(data.get('description') || '').trim()
     if (!title || !author) return
+    if (!allowDuplicate) {
+      const match = findDuplicate(title, author, draft?.sourceUrl)
+      if (match) {
+        setDuplicateId(match.id)
+        setSaveError('')
+        return
+      }
+    }
     const selectedCover = data.get('cover')
     const cover = selectedCover instanceof File && selectedCover.name ? selectedCover : null
     if (cover && !validCover(cover)) {
@@ -314,6 +651,8 @@ function Library() {
         cover_url: coverPhoto || !keepCover ? null : draft?.coverUrl ?? null,
         description: description || null,
         source_url: draft?.sourceUrl ?? null,
+        tags: cleanTags(String(data.get('tags') ?? '').split(',')),
+        series: String(data.get('series') ?? '').trim() || null,
       }).select(bookFields).single<Book>()
       if (error) throw error
       setBooks((current) => [book, ...current])
@@ -339,7 +678,7 @@ function Library() {
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/35"><Icon name="search" size={18} /></span>
             <input value={query} onChange={(e) => setQuery(e.target.value)} className="h-10 w-full rounded-full border border-white/[0.08] bg-white/[0.045] pl-11 pr-4 text-sm outline-none transition focus:border-[#c7ff36]/60 focus:bg-white/[0.07]" placeholder="Search your library" />
           </div>
-          <button aria-label="Add Book" disabled={loading || Boolean(loadError)} onClick={() => { setSaveError(''); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
+          <button aria-label="Add Book" disabled={loading || Boolean(loadError) || Boolean(openingDiscovery)} onClick={() => { setSaveError(''); clearDuplicate(); setDraft(null); setShowAdd(true) }} className="ml-auto flex h-10 items-center gap-2 rounded-full bg-[#c7ff36] px-4 text-sm font-semibold text-[#111] transition hover:bg-[#dbff79] active:scale-[.98]">
             <Icon name="plus" size={17} /><span className="hidden sm:inline">Add Book</span>
           </button>
           <button onClick={signOut} className="shrink-0 text-xs text-white/60 hover:text-white">Sign out</button>
@@ -380,6 +719,55 @@ function Library() {
             </div>
           </div>
 
+          {!loading && !loadError && filter === 'All' && !query.trim() && books.length > 0 && (
+            <section aria-labelledby="recommendations-heading" className="mb-8 rounded-2xl border border-white/10 bg-white/[0.035] p-4 sm:p-5">
+              <h2 id="recommendations-heading" className="font-display text-lg font-semibold">Recommended for you</h2>
+              <h3 className="mt-4 text-sm font-semibold">From your collection</h3>
+              {recommendations.length ? (
+                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {recommendations.map(({ book, reason }) => (
+                    <li key={book.id}>
+                      <button type="button" onClick={() => setBookView({ id: book.id, view: 'details' })}
+                        className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-white/[0.07] focus-visible:outline-[#c7ff36]">
+                        <Cover book={book} />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-semibold">{book.title}</span>
+                          <span className="mt-1 block text-xs text-white/65">{reason}</span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="mt-2 text-sm text-white/60">{discoveryReference ? 'No matching unread books in your collection.' : 'Rate a book above 5/10 to see similar titles.'}</p>}
+              <h3 className="mt-5 border-t border-white/10 pt-4 text-sm font-semibold">Discover Warhammer books</h3>
+              {outsideRecommendations.length ? (
+                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {outsideRecommendations.map(({ book, reason }) => (
+                    <li key={book.id}>
+                      <button type="button" disabled={Boolean(openingDiscovery)} onClick={() => void openDiscoveryBook(book)}
+                        className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-white/[0.07] focus-visible:outline-[#c7ff36]">
+                        <span className="h-[72px] w-12 shrink-0 overflow-hidden rounded bg-white/10">
+                          {book.coverUrl && <img src={book.coverUrl} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-full object-cover" />}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-semibold">{book.title}</span>
+                          <span className="mt-1 block text-xs text-white/65">{openingDiscovery === book.id ? 'Loading book details…' : reason}</span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p role="status" className="mt-2 text-sm text-white/60">
+                  {!discoveryReference ? 'Discover titles outside your collection after your next qualifying rating.'
+                    : !discoveryResult ? 'Looking for similar Warhammer books…'
+                    : discoveryResult.failed ? 'Open Library is unavailable right now.'
+                    : 'No matching Warhammer titles outside your collection and wishlist.'}
+                </p>
+              )}
+            </section>
+          )}
+
           <div className="mb-6 flex items-center justify-between border-b border-white/[0.07] pb-4">
             <p className="text-sm text-white/45"><span className="font-medium text-white">{visibleBooks.length}</span> {visibleBooks.length === 1 ? 'book' : 'books'}</p>
             {filter === 'All' && (
@@ -406,7 +794,7 @@ function Library() {
           ) : visibleBooks.length > 0 ? (
             <div className="grid grid-cols-2 gap-x-4 gap-y-9 sm:grid-cols-3 md:gap-x-6 xl:grid-cols-4 2xl:grid-cols-5">
               {visibleBooks.map((book) => (
-                <BookCard key={book.id} book={book} onUpdate={updateBook} />
+                <BookCard key={book.id} book={book} onUpdate={updateBook} onOpen={(view) => setBookView({ id: book.id, view })} />
               ))}
             </div>
           ) : (
@@ -419,6 +807,12 @@ function Library() {
         </section>
       </main>
 
+      {bookView && activeBook && (
+        <BookDialog key={`${bookView.id}:${bookView.view}`} book={activeBook} view={bookView.view} tagSuggestions={tagSuggestions}
+          onClose={() => setBookView(null)} onOpen={(view) => setBookView({ id: activeBook.id, view })}
+          onUpdate={updateBook} onRemove={removeBook} />
+      )}
+
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-5" onMouseDown={() => { if (!saving) setShowAdd(false) }}>
           <div role="dialog" aria-modal="true" aria-labelledby="add-book-heading" className="max-h-[100dvh] w-full max-w-lg overflow-y-auto rounded-t-[24px] border border-white/10 bg-[#171219] p-6 shadow-2xl sm:rounded-[24px] sm:p-8" onMouseDown={(e) => e.stopPropagation()}>
@@ -427,13 +821,25 @@ function Library() {
               <button aria-label="Close" disabled={saving} onClick={() => setShowAdd(false)} className="flex size-9 items-center justify-center rounded-full bg-white/[0.06] text-white/50 hover:text-white"><Icon name="close" size={18} /></button>
             </div>
             {!draft ? (
-              <BookSearch onChoose={(book) => { setKeepCover(true); setDraft(book) }}
-                onCustom={(title) => setDraft({ title, author: '', description: '', coverUrl: null, sourceUrl: null })} />
+              <BookSearch onChoose={chooseCatalogBook}
+                onCustom={(title) => setDraft({ title, author: '', description: '', tags: [], series: null, coverUrl: null, sourceUrl: null })} />
             ) : <form onSubmit={addBook}>
-              <button type="button" disabled={saving} onClick={() => { setSaveError(''); setDraft(null) }} className="mb-4 text-sm text-[#c7ff36]">Back to search</button>
-              <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Book title</span><input required autoFocus name="title" defaultValue={draft.title} placeholder="e.g. The Dispossessed" className="h-12 w-full rounded-xl border border-white/10 bg-black/25 px-4 text-sm outline-none transition placeholder:text-white/20 focus:border-[#c7ff36]/60" /></label>
-              <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Author</span><input required name="author" defaultValue={draft.author} placeholder="Author’s name" className="h-12 w-full rounded-xl border border-white/10 bg-black/25 px-4 text-sm outline-none transition placeholder:text-white/20 focus:border-[#c7ff36]/60" /></label>
+              <button type="button" disabled={saving} onClick={() => { setSaveError(''); clearDuplicate(); setDraft(null) }} className="mb-4 text-sm text-[#c7ff36]">Back to search</button>
+              {duplicate && (
+                <div role="status" className="mb-4 rounded-xl border border-[#c7ff36]/30 bg-[#c7ff36]/5 p-3 text-sm">
+                  <p><strong>{duplicate.title}</strong> is already in {duplicate.status === 'To Read' ? 'your wishlist' : 'your collection'}.</p>
+                  <div className="mt-2 flex flex-wrap gap-4">
+                    <button type="button" onClick={() => openDuplicate(duplicate)} className="text-[#c7ff36] underline">Open existing book</button>
+                    {!allowDuplicate && <button type="button" onClick={() => setAllowDuplicate(true)} className="text-white/70 underline">Allow another copy</button>}
+                  </div>
+                  {allowDuplicate && <p className="mt-2 text-white/70">You can now save another copy.</p>}
+                </div>
+              )}
+              <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Book title</span><input required autoFocus name="title" defaultValue={draft.title} onChange={clearDuplicate} placeholder="e.g. The Dispossessed" className="h-12 w-full rounded-xl border border-white/10 bg-black/25 px-4 text-sm outline-none transition placeholder:text-white/20 focus:border-[#c7ff36]/60" /></label>
+              <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Author</span><input required name="author" defaultValue={draft.author} onChange={clearDuplicate} placeholder="Author’s name" className="h-12 w-full rounded-xl border border-white/10 bg-black/25 px-4 text-sm outline-none transition placeholder:text-white/20 focus:border-[#c7ff36]/60" /></label>
               <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Description (optional)</span><textarea name="description" defaultValue={draft.description} maxLength={4000} rows={3} className="w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm outline-none focus:border-[#c7ff36]/60" /></label>
+              <label className="mb-5 block"><span className="mb-2 block text-xs font-medium text-white/45">Series (optional)</span><input name="series" maxLength={120} defaultValue={draft.series ?? ''} className="h-12 w-full rounded-xl border border-white/10 bg-black/25 px-4 text-sm outline-none focus:border-[#c7ff36]/60" /></label>
+              <TagsField initialTags={draft.tags} suggestions={tagSuggestions} />
               {draft.coverUrl && (
                 <label className="mb-4 flex items-center gap-3 text-sm text-white/70">
                   <img src={draft.coverUrl} alt="" referrerPolicy="no-referrer" className="h-20 w-14 rounded object-cover" />

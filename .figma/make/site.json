@@ -1,4 +1,5 @@
 {
+  "title": "folio",
   "description": "Organize your personal book collection with author and cover details, and track each title as read, in progress, or on your reading list.",
   "robots": {
     "index": false

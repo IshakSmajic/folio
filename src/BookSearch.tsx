@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { type BookMatch, loadBookDescription, searchBooks } from './openLibrary'
+import { type BookMatch, loadBookMetadata, searchBooks } from './openLibrary'
 
 export default function BookSearch({ onChoose, onCustom }: {
   onChoose: (book: BookMatch) => void
@@ -38,22 +38,22 @@ export default function BookSearch({ onChoose, onCustom }: {
     const controller = new AbortController()
     selection.current = controller
     setLoadingBook(true)
-    let description = ''
+    let selected = book
     const timeout = window.setTimeout(() => controller.abort(), 8000)
     try {
-      description = await loadBookDescription(book, controller.signal)
+      selected = await loadBookMetadata(book, controller.signal)
     } catch {
       // The search result is still usable if the description is unavailable.
     } finally {
       window.clearTimeout(timeout)
     }
-    if (selection.current === controller) onChoose({ ...book, description })
+    if (selection.current === controller) onChoose(selected)
   }
 
   return (
     <div>
       <label className="block">
-        <span className="mb-2 block text-xs font-medium text-white/60">Search by book title</span>
+        <span className="mb-2 block text-xs font-medium text-white/60">Search Warhammer books</span>
         <input type="search" autoFocus value={title} maxLength={200} disabled={loadingBook}
           onChange={(event) => {
             const nextTitle = event.target.value
